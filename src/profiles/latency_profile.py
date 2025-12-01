@@ -6,6 +6,7 @@ from typing import Any
 
 class LatencyProfile(ProcessingProfile):
     FIELDS = ["rsrp", "sinr", "rsrq", "latency", "cqi"]
+    TIME_FIELD = "timestamp"
 
     @classmethod
     @override
@@ -29,6 +30,15 @@ class LatencyProfile(ProcessingProfile):
 
         if not all(d.get("cell_index") == first_cell_index for d in data):
             return None
+
+        timestamps = [
+            d.get(cls.TIME_FIELD) for d in data
+            if d.get(cls.TIME_FIELD) is not None
+        ]
+
+        start_time =    min(timestamps) if timestamps else None
+        end_time =      max(timestamps) if timestamps else None
+
 
         # keep numeric fields only
         values: dict[str, list[float]] = {field: [] for field in cls.FIELDS}
@@ -66,5 +76,7 @@ class LatencyProfile(ProcessingProfile):
         return {
             "cell_index": first_cell_index,
             "num_samples": total_samples,
+            "start_time": start_time,
+            "end_time": end_time,
             "stats": stats
         }

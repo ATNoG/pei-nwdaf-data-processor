@@ -106,3 +106,32 @@ def test_all_fields_none_or_missing():
     for field in LatencyProfile.FIELDS:
         assert result["stats"][field]["samples"] == 0
         assert result["stats"][field]["mean"] is None
+
+def test_window_start_end_time():
+    data = [
+        {
+            "cell_index": 10,
+            "rsrp": -80,
+            "latency": 30,
+            "timestamp": 1000,
+        },
+        {
+            "cell_index": 10,
+            "rsrp": -85,
+            "latency": 25,
+            "timestamp": 1050,
+        },
+        {
+            "cell_index": 10,
+            "rsrp": -90,
+            "latency": 20,
+            "timestamp": 990,
+        },
+    ]
+
+    result = LatencyProfile.process(data)
+
+    assert result is not None
+    assert result["cell_index"] == 10
+    assert result["start_time"] == 990
+    assert result["end_time"] == 1050
