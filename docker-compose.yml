@@ -1,0 +1,16 @@
+services:
+  nwdaf:
+    container_name: data-processor
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_HOST=kafka
+      - KAFKA_PORT=${KAFKA_PORT}
+      - KAFKA_TOPIC=raw-data
+    networks:
+      - nwdaf-network
+
+networks:
+  nwdaf-network:
+    external: true
