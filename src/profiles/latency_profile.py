@@ -5,7 +5,7 @@ from typing import Any
 
 
 class LatencyProfile(ProcessingProfile):
-    FIELDS = ["rsrp", "sinr", "rsrq", "latency", "cqi"]
+    FIELDS = ["rsrp", "sinr", "rsrq", "mean_latency", "cqi"]
     TIME_FIELD = "timestamp"
 
     @classmethod
@@ -27,6 +27,11 @@ class LatencyProfile(ProcessingProfile):
         first_cell_index = data[0].get("cell_index")
         if first_cell_index is None:
             return None
+
+        network = data[0].get("network")
+        primary_bandwidth = data[0].get("primary_bandwidth")
+        ul_bandwidth = data[0].get("ul_bandwidth")
+
 
         if not all(d.get("cell_index") == first_cell_index for d in data):
             return None
@@ -75,7 +80,10 @@ class LatencyProfile(ProcessingProfile):
 
         return {
             "cell_index": first_cell_index,
+            "network":network,
             "num_samples": total_samples,
+            "primary_bandwidth":primary_bandwidth,
+            "ul_bandwidth":ul_bandwidth,
             "start_time": start_time,
             "end_time": end_time,
             "stats": stats
