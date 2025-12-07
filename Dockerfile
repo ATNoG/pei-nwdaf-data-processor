@@ -1,20 +1,17 @@
-FROM ghcr.io/astral-sh/uv:python3.11-alpine
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 WORKDIR /app
 
-# Install system dependencies (Alpine uses apk, not apt-get)
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     wget \
     unzip \
-    gcc \
-    g++ \
-    make \
-    musl-dev \
+    build-essential \
     python3-dev \
-    linux-headers
+    librdkafka-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download and extract the repository files
-
 RUN mkdir utils && cd utils \
 && git init \
 && git remote add origin https://github.com/ATNoG/pei-nwdaf-comms.git \
@@ -25,5 +22,11 @@ RUN mkdir utils && cd utils \
 && rmdir -p kafka/src
 
 
+# Copy dependency files
 COPY requirements.txt ./
+COPY main.py .
+COPY src/ ./src/
+
+# Install dependencies using uv
 RUN uv pip install --system -r requirements.txt
+CMD ["uv", "run", "main.py"]
