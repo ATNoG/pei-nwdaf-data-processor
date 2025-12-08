@@ -3,7 +3,7 @@ import os
 import asyncio
 import logging
 from utils.kmw import PyKafBridge
-from time_window_manager import TimeWindowManager
+from src.time_window_manager import TimeWindowManager
 from src.profiles.latency_profile import LatencyProfile
 from src.profiles.processing_profile import EmptyWindowStrategy
 
@@ -30,7 +30,7 @@ def on_window_complete(cell_id: str, processed_data: dict, window_start: int, wi
     logger.info("=" * 80)
     logger.info(f"WINDOW COMPLETE for Cell {cell_id}")
     logger.info(f"  Time range: {window_start} -> {window_end}")
-    
+
     if processed_data:
         # Override start_time and end_time with window boundaries
         processed_data['start_time'] = window_start
@@ -39,17 +39,17 @@ def on_window_complete(cell_id: str, processed_data: dict, window_start: int, wi
 
         is_empty = processed_data.get('is_empty_window', False)
         num_samples = processed_data.get('sample_count', 0)
-        
+
         if is_empty:
             logger.info(f"  Empty window (handled with strategy: {EMPTY_WINDOW_STRATEGY.value})")
         else:
             logger.info(f"  Processed {num_samples} samples")
             logger.info(f"  Result keys: {list(processed_data.keys())}")
-    
+
     logger.info("=" * 80)
 
     logger.info(f"Processed data for Cell {cell_id}: {json.dumps(processed_data, indent=4, default=str)}")
-    
+
     # Send to output Kafka topic
     if kafka_bridge:
         try:
@@ -76,10 +76,10 @@ def process_message(msg: dict) -> dict:
             data = json.loads(csv_line)
         else:
             data = csv_line
-        
+
         # Add to time window manager
         window_manager.add_measurement(data)
-        
+
         # Log
         cell_id = data.get('cell_index', 'unknown')
         timestamp = data.get('timestamp', 'unknown')
@@ -108,7 +108,7 @@ async def main():
         logger.info("Time window manager initialized with LatencyProfile")
         logger.info(f"  Window duration: {WINDOW_DURATION}s")
         logger.info(f"  Empty window strategy: {EMPTY_WINDOW_STRATEGY.value}")
-        
+
         kafka_bridge = PyKafBridge(TOPIC, hostname=KAFKA_HOST, port=KAFKA_PORT)
 
         # Bind the processing function to the topic before starting the consumer
@@ -140,7 +140,7 @@ async def main():
             print("Forcing close of all active windows...")
             completed_windows = window_manager.force_close_all_windows()
             print(f"Closed {len(completed_windows)} windows during shutdown")
-        
+
         if kafka_bridge is not None:
             await kafka_bridge.close()
             print("Kafka bridge consumer closed")
