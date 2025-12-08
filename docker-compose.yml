@@ -6,8 +6,12 @@ services:
       dockerfile: Dockerfile
     environment:
       - KAFKA_HOST=kafka
-      - KAFKA_PORT=${KAFKA_PORT}
+      - KAFKA_PORT=${KAFKA_PORT:-9092}
       - KAFKA_TOPIC=raw-data
+      - OUTPUT_TOPIC=${OUTPUT_TOPIC:-processed-data}
+      - WINDOW_DURATION=${WINDOW_DURATION:-60}
+      - ALLOWED_LATENESS=${ALLOWED_LATENESS:-30}
+      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-SKIP}
     networks:
       - nwdaf-network
 

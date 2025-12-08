@@ -80,13 +80,12 @@ class LatencyProfile(ProcessingProfile):
                 }
 
         return {
+            "type":"latency",
             "cell_index": first_cell_index,
             "network":network,
             "sample_count": total_samples,
             "primary_bandwidth":primary_bandwidth,
             "ul_bandwidth":ul_bandwidth,
-            "start_time": start_time,
-            "end_time": end_time,
             **stats
         }
 
@@ -94,8 +93,6 @@ class LatencyProfile(ProcessingProfile):
     @override
     def handle_empty_window(cls, cell_id: str, window_start: int, window_end: int, strategy: EmptyWindowStrategy) -> dict | None:
         """Handle empty window for latency profile."""
-        if strategy == EmptyWindowStrategy.SKIP:
-            return None
 
         #TODO: Implement other strategies, such as ZERO_FILL or FORWARD_FILL
 
@@ -111,11 +108,10 @@ class LatencyProfile(ProcessingProfile):
         #    for field in cls.FIELDS
         #}
         #
-        #return {
-        #    "cell_index": cell_id,
-        #    "num_samples": 0,
-        #    "start_time": window_start,
-        #    "end_time": window_end,
-        #    "stats": empty_stats,
-        #    "is_empty_window": True
-        #}
+        #
+        if strategy == EmptyWindowStrategy.SKIP:
+
+            return {
+                "cell_index": cell_id,
+                "sample_count": 0,
+            }
