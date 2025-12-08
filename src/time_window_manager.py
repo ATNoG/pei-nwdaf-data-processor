@@ -3,7 +3,7 @@ from typing import Dict, List, Callable, Optional, Type
 import logging
 
 from src.profiles.processing_profile import ProcessingProfile
-from src.empty_window_strategy import EmptyWindowStrategy
+from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +25,16 @@ class TimeWindowManager:
         self.window_duration = window_duration_seconds
         self.on_window_complete = on_window_complete
         self.processing_profile = processing_profile
-        self.empty_window_strategy = empty_window_strategy
+        self.empty_window_strategy = empty_window_strategy if empty_window_strategy else SkipStrategy()
 
         # Storage structure: {cell_id: {window_start: {'measurements': [...]}}}
         self.windows: Dict[str, Dict[int, Dict]] = defaultdict(lambda: defaultdict(lambda: {'measurements': []}))
 
         # Track the latest completed window boundary for each cell
         self.last_completed_window: Dict[str, int] = {}
+        
+        # Track the last processed result for each cell (for forward-fill strategy)
+        self.last_processed_result: Dict[str, Dict] = {}
 
     def add_measurement(self, measurement: dict) -> Optional[List[Dict]]:
         """
@@ -104,10 +107,12 @@ class TimeWindowManager:
         Returns:
             Dictionary containing window metadata and processed/raw measurements
         """
-        measurements = window_data['measurements']
 
         try:
             processed_result = self.processing_profile.process(measurements)
+            # Store successful result for potential forward-fill
+            if processed_result:
+                self.last_processed_result[cell_id] = processed_result
         except Exception as e:
             logger.error(f"Error processing window for cell {cell_id}: {e}")
             processed_result = None
@@ -155,19 +160,16 @@ class TimeWindowManager:
         next_window = last_completed + self.window_duration
 
         while next_window < current_window_start:
-            if next_window not in cell_windows:
-                completed_windows.extend(self._handle_empty_window(cell_id, next_window))
-            next_window += self.window_duration
-
-        return completed_windows
-
     def _handle_empty_window(self, cell_id: str, window_start: int) -> List[Dict]:
         """Handle an empty window using the configured strategy and processing profile"""
 
         window_end = window_start + self.window_duration
 
         try:
-            empty_result = self.processing_profile.handle_empty_window(cell_id, window_start, window_end, self.empty_window_strategy)
+            last_processed = self.last_processed_result.get(cell_id)
+            empty_result = self.processing_profile.handle_empty_window(
+                cell_id, window_start, window_end, self.empty_window_strategy, last_processed
+            )
 
             if empty_result is None:
                 return []
@@ -189,6 +191,12 @@ class TimeWindowManager:
                 'window_end': window_end,
                 'measurement_count': 0,
                 'processed': empty_result,
+                'is_empty': True
+            }]
+
+        except Exception as e:
+            logger.error(f"Error handling empty window for cell {cell_id}: {e}")
+            return [{'processed': empty_result,
                 'is_empty': True
             }]
 
