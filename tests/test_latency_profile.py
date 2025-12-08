@@ -42,17 +42,16 @@ def test_happy_path_same_cell(single_cell_data):
     result = LatencyProfile.process(single_cell_data)
     assert result is not None
     assert result["cell_index"] == 123
-    assert result["num_samples"] == 3
+    assert result["sample_count"] == 3
 
-    stats = result["stats"]
-    assert stats["mean_latency"]["min"] == 20
-    assert stats["mean_latency"]["max"] == 30
-    assert stats["mean_latency"]["mean"] == 25.0
-    assert stats["mean_latency"]["samples"] == 3
-    assert stats["mean_latency"]["std"] > 0
+    assert result["mean_latency"]["min"] == 20
+    assert result["mean_latency"]["max"] == 30
+    assert result["mean_latency"]["mean"] == 25.0
+    assert result["mean_latency"]["samples"] == 3
+    assert result["mean_latency"]["std"] > 0
 
-    assert stats["rsrp"]["mean"] == -85.0
-    assert stats["cqi"]["samples"] == 3
+    assert result["rsrp"]["mean"] == -85.0
+    assert result["cqi"]["samples"] == 3
 
 
 def test_mixed_cell_indices_returns_none(mixed_cell_data):
@@ -78,22 +77,21 @@ def test_handles_missing_or_non_numeric_fields_gracefully(partial_fields_data):
     result = LatencyProfile.process(partial_fields_data)
     assert result is not None
     assert result["cell_index"] == 999
-    assert result["num_samples"] == 3
+    assert result["sample_count"] == 3
 
-    stats = result["stats"]
-    assert stats["rsrp"]["samples"] == 2
-    assert stats["mean_latency"]["samples"] == 2
-    assert stats["cqi"]["samples"] == 0
-    assert stats["cqi"]["min"] is None
-    assert stats["sinr"]["samples"] == 1
-    assert stats["rsrq"]["samples"] == 1
+    assert result["rsrp"]["samples"] == 2
+    assert result["mean_latency"]["samples"] == 2
+    assert result["cqi"]["samples"] == 0
+    assert result["cqi"]["min"] is None
+    assert result["sinr"]["samples"] == 1
+    assert result["rsrq"]["samples"] == 1
 
 
 def test_single_sample_std_is_zero():
     data = [{"cell_index": 1, "mean_latency": 42, "rsrp": -90}]
     result = LatencyProfile.process(data)
-    assert result["stats"]["mean_latency"]["std"] == 0.0
-    assert result["stats"]["mean_latency"]["samples"] == 1
+    assert result["mean_latency"]["std"] == 0.0
+    assert result["mean_latency"]["samples"] == 1
 
 
 def test_all_fields_none_or_missing():
@@ -104,5 +102,5 @@ def test_all_fields_none_or_missing():
     result = LatencyProfile.process(data)
     assert result is not None
     for field in LatencyProfile.FIELDS:
-        assert result["stats"][field]["samples"] == 0
-        assert result["stats"][field]["mean"] is None
+        assert result[field]["samples"] == 0
+        assert result[field]["mean"] is None
