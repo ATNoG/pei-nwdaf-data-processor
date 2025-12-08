@@ -1,8 +1,9 @@
 from collections import defaultdict
-from typing import Dict, List, Callable, Optional, Type, Any
+from typing import Dict, List, Callable, Optional, Type
 import logging
 
-from src.profiles.processing_profile import ProcessingProfile, EmptyWindowStrategy
+from src.profiles.processing_profile import ProcessingProfile
+from src.empty_window_strategy import EmptyWindowStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +15,11 @@ class TimeWindowManager:
     """
 
     def __init__(
-        self, 
-        window_duration_seconds: int = 10, 
+        self,
+        window_duration_seconds: int = 10,
         on_window_complete: Optional[Callable] = None,
-        processing_profile: Optional[Type['ProcessingProfile']] = None,
-        empty_window_strategy: Optional['EmptyWindowStrategy'] = None
+        processing_profile: Optional[Type[ProcessingProfile]] = None,
+        empty_window_strategy: Optional[EmptyWindowStrategy] = None
     ):
 
         self.window_duration = window_duration_seconds
@@ -44,7 +45,7 @@ class TimeWindowManager:
 
             if cell_id is None:
                 return None
-                
+
             window_start = self._get_window_start(timestamp)
 
             # Add measurement to the appropriate window
@@ -58,7 +59,7 @@ class TimeWindowManager:
         except Exception as e:
             logger.error(f"Error adding measurement: {e}")
             return None
-    
+
     def _get_window_start(self, timestamp: int) -> int:
         """Calculate the start of the time-aligned window for a given timestamp."""
         return (timestamp // self.window_duration) * self.window_duration
@@ -72,16 +73,16 @@ class TimeWindowManager:
         completed_windows = []
         current_window_start = self._get_window_start(current_timestamp)
         cell_windows = self.windows[cell_id]
-        
+
         # Find all windows that should be closed (end time < current window start)
         windows_to_close = [
             window_start for window_start in cell_windows.keys()
             if window_start < current_window_start
         ]
-        
+
         # Handle empty windows gaps
         completed_windows.extend(self._process_empty_windows(cell_id, current_window_start))
-        
+
         # Close the identified windows with data
         for window_start in windows_to_close:
             window_data = cell_windows[window_start]
@@ -89,12 +90,12 @@ class TimeWindowManager:
                 window_end = window_start + self.window_duration
                 completed_window = self._close_window(cell_id, window_start, window_end, window_data)
                 completed_windows.append(completed_window)
-            
+
             # Remove the closed window from storage
             del cell_windows[window_start]
-        
+
         return completed_windows
-    
+
     def _close_window(self, cell_id: str, window_start: int, window_end: int, window_data: dict) -> Dict:
         """
         Close a window and prepare its data for processing.
@@ -104,7 +105,7 @@ class TimeWindowManager:
             Dictionary containing window metadata and processed/raw measurements
         """
         measurements = window_data['measurements']
-        
+
         try:
             processed_result = self.processing_profile.process(measurements)
         except Exception as e:
@@ -119,15 +120,15 @@ class TimeWindowManager:
             'measurements': measurements.copy() if not self.processing_profile else None,
             'processed': processed_result
         }
-        
+
         self.last_completed_window[cell_id] = window_start
-        
+
         logger.info(
             f"Window completed for cell {cell_id}: "
             f"{completed_window['measurement_count']} measurements "
             f"from {completed_window['window_start']} to {completed_window['window_end']}"
         )
-        
+
         # Call the callback if provided
         if self.on_window_complete:
             try:
@@ -139,49 +140,49 @@ class TimeWindowManager:
                 )
             except Exception as e:
                 logger.error(f"Error in window complete callback: {e}")
-        
+
         return completed_window
-    
+
     def _process_empty_windows(self, cell_id: str, current_window_start: int) -> List[Dict]:
         """Process empty windows between the last completed and current window"""
         completed_windows = []
         last_completed = self.last_completed_window.get(cell_id, None)
-        
+
         if last_completed is None:
             return []
-        
+
         cell_windows = self.windows[cell_id]
         next_window = last_completed + self.window_duration
-        
+
         while next_window < current_window_start:
             if next_window not in cell_windows:
                 completed_windows.extend(self._handle_empty_window(cell_id, next_window))
             next_window += self.window_duration
-        
+
         return completed_windows
-    
+
     def _handle_empty_window(self, cell_id: str, window_start: int) -> List[Dict]:
         """Handle an empty window using the configured strategy and processing profile"""
-        
+
         window_end = window_start + self.window_duration
-        
+
         try:
             empty_result = self.processing_profile.handle_empty_window(cell_id, window_start, window_end, self.empty_window_strategy)
-            
+
             if empty_result is None:
                 return []
-            
+
             self.last_completed_window[cell_id] = window_start
-            
+
             logger.info(f"Handled empty window for cell {cell_id}: {window_start}-{window_end}")
-            
+
             # Call the callback if provided
             if self.on_window_complete:
                 try:
                     self.on_window_complete(cell_id, empty_result, window_start, window_end)
                 except Exception as e:
                     logger.error(f"Error in window complete callback for empty window: {e}")
-            
+
             return [{
                 'cell_id': cell_id,
                 'window_start': window_start,
@@ -190,25 +191,24 @@ class TimeWindowManager:
                 'processed': empty_result,
                 'is_empty': True
             }]
-            
+
         except Exception as e:
             logger.error(f"Error handling empty window for cell {cell_id}: {e}")
             return []
-    
+
     def force_close_all_windows(self) -> List[Dict]:
         """Force close all active windows (useful for shutdown or manual flush)"""
         completed_windows = []
-        
+
         for cell_id, cell_windows in self.windows.items():
             for window_start, window_data in cell_windows.items():
                 if window_data['measurements']:
                     window_end = window_start + self.window_duration
                     completed_window = self._close_window(cell_id, window_start, window_end, window_data)
                     completed_windows.append(completed_window)
-        
+
         # Clear all windows
         self.windows.clear()
-        
+
         logger.info(f"Forced close of {len(completed_windows)} windows")
         return completed_windows
-
