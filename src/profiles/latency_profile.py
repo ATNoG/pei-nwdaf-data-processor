@@ -1,6 +1,7 @@
 from typing import override
 from statistics import mean, stdev
 from src.profiles.processing_profile import ProcessingProfile
+from src.empty_window_strategy import EmptyWindowStrategy
 from typing import Any
 
 
@@ -79,12 +80,38 @@ class LatencyProfile(ProcessingProfile):
                 }
 
         return {
+            "type":"latency",
             "cell_index": first_cell_index,
             "network":network,
-            "num_samples": total_samples,
+            "sample_count": total_samples,
             "primary_bandwidth":primary_bandwidth,
             "ul_bandwidth":ul_bandwidth,
-            "start_time": start_time,
-            "end_time": end_time,
-            "stats": stats
+            **stats
         }
+
+    @classmethod
+    @override
+    def handle_empty_window(cls, cell_id: str, window_start: int, window_end: int, strategy: EmptyWindowStrategy) -> dict | None:
+        """Handle empty window for latency profile."""
+
+        #TODO: Implement other strategies, such as ZERO_FILL or FORWARD_FILL
+
+        # Create base structure
+        #empty_stats = {
+        #    field: {
+        #        "min": 0.0,
+        #        "max": 0.0,
+        #        "mean": 0.0,
+        #        "std": 0.0,
+        #        "samples": 0
+        #    }
+        #    for field in cls.FIELDS
+        #}
+        #
+        #
+        if strategy == EmptyWindowStrategy.SKIP:
+
+            return {
+                "cell_index": cell_id,
+                "sample_count": 0,
+            }
