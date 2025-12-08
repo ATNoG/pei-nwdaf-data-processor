@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 # Kafka setup
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = os.getenv("KAFKA_PORT", "9092")
-TOPIC      = os.getenv("KAFKA_TOPIC", "raw-data")
-OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "processed-data")
+TOPIC      = os.getenv("KAFKA_TOPIC", "network.data.ingested")
+OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "network.data.processed")
 
 # Time window setup, in seconds
 WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "10"))
