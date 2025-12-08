@@ -110,9 +110,8 @@ class LatencyProfile(ProcessingProfile):
         #
         #
         if strategy == EmptyWindowStrategy.SKIP:
-            return None
 
-        return {
-            "cell_index": cell_id,
-            "sample_count": 0,
-        }
+            return {
+                "cell_index": cell_id,
+                "sample_count": 0,
+            }

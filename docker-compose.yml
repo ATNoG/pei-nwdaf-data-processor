@@ -11,6 +11,7 @@ services:
       - OUTPUT_TOPIC=${OUTPUT_TOPIC:-processed-data}
       - WINDOW_DURATION=${WINDOW_DURATION:-60}
       - ALLOWED_LATENESS=${ALLOWED_LATENESS:-30}
+      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-SKIP}
     networks:
       - nwdaf-network
 
