@@ -19,6 +19,12 @@ class DummyProcessingProfile(ProcessingProfile):
 
     @classmethod
     @override
+    def get_empty_window_context(cls, cell_id, last_processed=None):
+        """Provide minimal context for empty window handling in tests."""
+        return {}
+
+    @classmethod
+    @override
     def handle_empty_window(cls,cell_id, window_start, window_end, strategy):
         return {
             "cell_id": cell_id,

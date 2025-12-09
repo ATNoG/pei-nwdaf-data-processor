@@ -23,7 +23,7 @@ class TimeWindowManager:
         self.window_size = window_size
         self.on_window_complete = on_window_complete or print
         self.processing_profiles = processing_profiles or []
-        self.empty_window_strategy = empty_window_strategy or EmptyWindowStrategy.SKIP
+        self.empty_window_strategy = empty_window_strategy or SkipStrategy
         self.allowed_lateness_seconds = allowed_lateness_seconds
 
         self.watermark: int = 0

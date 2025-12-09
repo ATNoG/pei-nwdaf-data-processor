@@ -1,7 +1,7 @@
 from typing import override, Optional, Dict, Any
 from statistics import mean, stdev
 from src.profiles.processing_profile import ProcessingProfile
-
+from src.empty_window_strategy import EmptyWindowStrategy
 
 class LatencyProfile(ProcessingProfile):
     FIELDS = ["rsrp", "sinr", "rsrq", "mean_latency", "cqi"]
@@ -106,27 +106,5 @@ class LatencyProfile(ProcessingProfile):
                     context['metadata'][field] = last_processed[field]
         
         return context
-    def handle_empty_window(cls, cell_id: str, window_start: int, window_end: int, strategy: EmptyWindowStrategy) -> dict | None:
-        """Handle empty window for latency profile."""
 
-        #TODO: Implement other strategies, such as ZERO_FILL or FORWARD_FILL
-
-        # Create base structure
-        #empty_stats = {
-        #    field: {
-        #        "min": 0.0,
-        #        "max": 0.0,
-        #        "mean": 0.0,
-        #        "std": 0.0,
-        #        "samples": 0
-        #    }
-        #    for field in cls.FIELDS
-        #}
-        #
-        #
-        if strategy == EmptyWindowStrategy.SKIP:
-
-            return {
-                "cell_index": cell_id,
-                "sample_count": 0,
-            }
+        
