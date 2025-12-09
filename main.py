@@ -33,7 +33,7 @@ STRATEGY_MAP = {
     "FORWARD_FILL": ForwardFillStrategy(),
 }
 
-EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(EMPTY_WINDOW_STRATEGY_NAME.upper(), SkipStrategy())
+EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(EMPTY_WINDOW_STRATEGY_NAME.upper(), ZeroFillStrategy())
 
 
 window_manager:None|TimeWindowManager  = None
