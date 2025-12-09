@@ -24,7 +24,7 @@ OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "network.data.processed")
 # Time window setup, in seconds
 WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "10"))
 ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
-EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")
+EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "ZERO_FILL")
 
 # Map strategy name to strategy instance
 STRATEGY_MAP = {
