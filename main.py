@@ -6,6 +6,7 @@ from utils.kmw import PyKafBridge
 from src.time_window_manager import TimeWindowManager
 from src.profiles.latency_profile import LatencyProfile
 from src.profiles.processing_profile import EmptyWindowStrategy
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -17,55 +18,70 @@ logger = logging.getLogger(__name__)
 # Kafka setup
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = os.getenv("KAFKA_PORT", "9092")
-TOPIC      = os.getenv("KAFKA_TOPIC", "raw-data")
-OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "processed-data")
+TOPIC      = os.getenv("KAFKA_TOPIC", "network.data.ingested")
+OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "network.data.processed")
 
 # Time window setup, in seconds
-WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "10")) # 10 seconds for testing purposes, change later
+WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "10"))
+ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
 EMPTY_WINDOW_STRATEGY = EmptyWindowStrategy[os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")]
 
-def on_window_complete(cell_id: str, processed_data: dict, window_start: int, window_end: int):
+
+window_manager:None|TimeWindowManager  = None
+kafka_bridge  :PyKafBridge
+
+async def watermark_task(manager: TimeWindowManager, interval: float = 1.0):
+    """
+    Periodically advances watermark and closes windows based on event time.
+    """
+    while True:
+        now_ts = int(time.time())
+        logger.info("Advancing watermark")
+
+        # Always advance watermark to current time
+        manager.advance_watermark(now_ts)
+
+        await asyncio.sleep(interval)
+
+
+
+def on_window_complete(data: dict):
     """Callback triggered when a window is completed for a cell"""
 
+    if data is None:
+        logger.error("Did not receive data")
+
+    """
+    cell_id = data["cell_index"]
     logger.info("=" * 80)
-    logger.info(f"WINDOW COMPLETE for Cell {cell_id}")
-    logger.info(f"  Time range: {window_start} -> {window_end}")
+    logger.info(f"WINDOW COMPLETE for Cell {data["cell_index"]}")
+    logger.info(f"  Time range: {data["window_start"]} -> {data["window_end"]}")
 
-    if processed_data:
-        # Override start_time and end_time with window boundaries
-        processed_data['start_time'] = window_start
-        processed_data['end_time'] = window_end
-        processed_data['window_duration'] = WINDOW_DURATION
-
-        is_empty = processed_data.get('is_empty_window', False)
-        num_samples = processed_data.get('sample_count', 0)
-
-        if is_empty:
-            logger.info(f"  Empty window (handled with strategy: {EMPTY_WINDOW_STRATEGY.value})")
-        else:
-            logger.info(f"  Processed {num_samples} samples")
-            logger.info(f"  Result keys: {list(processed_data.keys())}")
+    logger.info(f"  Processed {data["sample_count"]} samples")
+    logger.info(f"  Result keys: {list(data.keys())}")
 
     logger.info("=" * 80)
 
-    logger.info(f"Processed data for Cell {cell_id}: {json.dumps(processed_data, indent=4, default=str)}")
-
+    logger.info(f"Processed data {cell_id}: {json.dumps(data, indent=4, default=str)}")
+    """
     # Send to output Kafka topic
     if kafka_bridge:
         try:
-            message = json.dumps(processed_data, default=str)
+            message = json.dumps(data, default=str)
             kafka_bridge.produce(OUTPUT_TOPIC, message)
             logger.info(f"Produced processed data to topic '{OUTPUT_TOPIC}'")
         except Exception as e:
             logger.error(f"Failed to produce processed data to topic '{OUTPUT_TOPIC}': {e}")
 
 
-def process_message(msg: dict) -> dict:
+def process_message(msg: dict):
     """
     Callback function that processes each message as it arrives.
     This is bound to the Kafka topic and called automatically by PyKafBridge.
     """
     try:
+        if window_manager is None:
+            return
         # Process the CSV line
         csv_line = msg['content']
         offset = msg['offset']
@@ -93,21 +109,22 @@ def process_message(msg: dict) -> dict:
 
 async def main():
     global window_manager, kafka_bridge
-    window_manager = None
-    kafka_bridge = None
     shutdown_event = asyncio.Event()
 
     try:
         # Initialize time window manager
         window_manager = TimeWindowManager(
-            window_duration_seconds=WINDOW_DURATION,
+            window_size=WINDOW_DURATION,
             on_window_complete=on_window_complete,
-            processing_profile=LatencyProfile,
-            empty_window_strategy=EMPTY_WINDOW_STRATEGY
+            processing_profiles=[LatencyProfile()],
+            empty_window_strategy=EMPTY_WINDOW_STRATEGY,
         )
         logger.info("Time window manager initialized with LatencyProfile")
         logger.info(f"  Window duration: {WINDOW_DURATION}s")
         logger.info(f"  Empty window strategy: {EMPTY_WINDOW_STRATEGY.value}")
+
+        watermark_task_handle = asyncio.create_task(watermark_task(window_manager, interval=WINDOW_DURATION))
+        logger.info("Watermark task started, advancing every 1s")
 
         kafka_bridge = PyKafBridge(TOPIC, hostname=KAFKA_HOST, port=KAFKA_PORT)
 
@@ -135,15 +152,12 @@ async def main():
     except Exception as e:
         print(f"Failed to start Kafka bridge consumer: {e}")
     finally:
-        # Force close any remaining windows before shutdown
-        if window_manager:
-            print("Forcing close of all active windows...")
-            completed_windows = window_manager.force_close_all_windows()
-            print(f"Closed {len(completed_windows)} windows during shutdown")
-
         if kafka_bridge is not None:
             await kafka_bridge.close()
             print("Kafka bridge consumer closed")
+        if watermark_task_handle:
+            watermark_task_handle.cancel()
+            await asyncio.gather(watermark_task_handle, return_exceptions=True)
 
 if __name__ == "__main__":
     asyncio.run(main())

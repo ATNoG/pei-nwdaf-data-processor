@@ -11,11 +11,11 @@ docker run -p 9092:9092 apache/kafka:4.1.1
 
 ### **2. Create Required Topics**
 
-You need two Kafka topics: **raw-data** and **processed-data**.
+You need two Kafka topics: **network.data.ingested** and **network.data.processed**.
 
 ```bash
-utils/topic.sh [container] "raw-data" -c
-utils/topic.sh [container] "processed-data" -c
+utils/topic.sh [container] "network.data.ingested" -c
+utils/topic.sh [container] "network.data.processed" -c
 ```
 
 ---
