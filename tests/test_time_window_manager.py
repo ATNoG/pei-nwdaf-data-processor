@@ -25,7 +25,7 @@ class DummyProcessingProfile(ProcessingProfile):
 
     @classmethod
     @override
-    def handle_empty_window(cls,cell_id, window_start, window_end, strategy):
+    def handle_empty_window(cls,cell_id, window_start, window_end, strategy, last_processed=None):
         return {
             "cell_id": cell_id,
             "window_start": window_start,

@@ -5,7 +5,7 @@ import logging
 from utils.kmw import PyKafBridge
 from src.time_window_manager import TimeWindowManager
 from src.profiles.latency_profile import LatencyProfile
-from src.profiles.processing_profile import EmptyWindowStrategy
+from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy, ZeroFillStrategy, ForwardFillStrategy
 import time
 
 # Configure logging
@@ -24,7 +24,16 @@ OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "network.data.processed")
 # Time window setup, in seconds
 WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "10"))
 ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
-EMPTY_WINDOW_STRATEGY = EmptyWindowStrategy[os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")]
+EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")
+
+# Map strategy name to strategy instance
+STRATEGY_MAP = {
+    "SKIP": SkipStrategy(),
+    "ZERO_FILL": ZeroFillStrategy(),
+    "FORWARD_FILL": ForwardFillStrategy(),
+}
+
+EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(EMPTY_WINDOW_STRATEGY_NAME.upper(), SkipStrategy())
 
 
 window_manager:None|TimeWindowManager  = None
@@ -118,10 +127,12 @@ async def main():
             on_window_complete=on_window_complete,
             processing_profiles=[LatencyProfile()],
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
+            allowed_lateness_seconds=ALLOWED_LATENESS,
         )
         logger.info("Time window manager initialized with LatencyProfile")
         logger.info(f"  Window duration: {WINDOW_DURATION}s")
-        logger.info(f"  Empty window strategy: {EMPTY_WINDOW_STRATEGY.value}")
+        logger.info(f"  Allowed lateness: {ALLOWED_LATENESS}s")
+        logger.info(f"  Empty window strategy: {EMPTY_WINDOW_STRATEGY_NAME}")
 
         watermark_task_handle = asyncio.create_task(watermark_task(window_manager, interval=WINDOW_DURATION))
         logger.info("Watermark task started, advancing every 1s")
