@@ -1,7 +1,7 @@
 from typing import Callable
 import logging
 from src.profiles.processing_profile import ProcessingProfile
-from src.empty_window_strategy import EmptyWindowStrategy
+from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy
 
 logger = logging.getLogger("TimeWindowManager")
 
@@ -23,11 +23,12 @@ class TimeWindowManager:
         self.window_size = window_size
         self.on_window_complete = on_window_complete or print
         self.processing_profiles = processing_profiles or []
-        self.empty_window_strategy = empty_window_strategy or EmptyWindowStrategy.SKIP
+        self.empty_window_strategy = empty_window_strategy or SkipStrategy
         self.allowed_lateness_seconds = allowed_lateness_seconds
 
         self.watermark: int = 0
         self._windows: dict[str, dict[int, list[dict]]] = {}
+        self._last_processed: dict[str, dict] = {}  # Track last processed window per cell
 
     def advance_watermark(self, watermark_time: int):
         """
@@ -102,12 +103,16 @@ class TimeWindowManager:
         for profile in self.processing_profiles:
             data:dict|None
             if is_empty:
+                # Get last processed data for this cell (if any)
+                last_processed = self._last_processed.get(cell_id)
+                
                 # process empty
                 data = profile.handle_empty_window(
                     cell_id=cell_id,
                     window_start=window_start,
                     window_end=window_start+self.window_size,
-                    strategy=self.empty_window_strategy)
+                    strategy=self.empty_window_strategy,
+                    last_processed=last_processed)
             else:
                 data = profile.process(target_measurements)
 
@@ -116,6 +121,10 @@ class TimeWindowManager:
 
             data["window_start"] = window_start
             data["window_end"]   = window_start+self.window_size
+
+            # Store as last processed for this cell (only if it's not an empty window)
+            if not is_empty:
+                self._last_processed[cell_id] = data.copy()
 
             self.on_window_complete(data)
 
