@@ -1,8 +1,9 @@
 from typing import Callable
 import logging
+import asyncio
 from src.profiles.processing_profile import ProcessingProfile
 from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy
-import requests
+import httpx
 
 logger = logging.getLogger("TimeWindowManager")
 
@@ -37,7 +38,7 @@ class TimeWindowManager:
             self.watermark = watermark
             self._can_change_watermark = False
 
-    def advance_watermark(self, watermark_time: int):
+    async def advance_watermark(self, watermark_time: int):
         """
         Advances watermark monotonically and finalizes all windows
         whose end <= watermark.
@@ -51,52 +52,55 @@ class TimeWindowManager:
         start_time = self.watermark
         end_time = watermark_time
 
-        cells = self._fetch_cells()
+        # Fetch cells asynchronously
+        cells = await self._fetch_cells()
         if not cells:
             # no cell registered
             return
 
-        for cell in cells:
-            self._make_window(cell,start_time,end_time)
+        # Process all cells in parallel
+        tasks = [self._make_window(cell, start_time, end_time) for cell in cells]
+        await asyncio.gather(*tasks)
 
         # update watermark
         self.watermark = watermark_time
 
-    def _make_window(self,cell_index:int,start_time:int,end_time:int):
+    async def _make_window(self, cell_index: int, start_time: int, end_time: int):
 
         URL = self.storage_struct.url + self.storage_struct.endpoint.raw
 
-        fetch:bool = True
-        window_data:list = []
+        fetch: bool = True
+        window_data: list = []
         batch_number = 1
 
-        while fetch:
-            # prepare params
-            params = {
-                "batch_number":batch_number,
-                "cell_index":cell_index,
-                "start_time":start_time,
-                "end_time":end_time
-            }
-            try:
-                response = requests.get(f"{URL}", params=params, timeout=30)
-                response.raise_for_status()
+        async with httpx.AsyncClient() as client:
+            while fetch:
+                # prepare params
+                params = {
+                    "batch_number": batch_number,
+                    "cell_index": cell_index,
+                    "start_time": start_time,
+                    "end_time": end_time
+                }
+                try:
+                    response = await client.get(f"{URL}", params=params, timeout=30.0)
+                    response.raise_for_status()
 
-                result = response.json()
+                    result = response.json()
 
-                data = result.get("data", None)
-                if data is None:
-                    logger.warning(f"[ABORTING] Bad response from storage API: {result}")
+                    data = result.get("data", None)
+                    if data is None:
+                        logger.warning(f"[ABORTING] Bad response from storage API: {result}")
+                        return
+
+                    fetch = result.get("has_next", False)
+                    batch_number += 1
+
+                    window_data.extend(data)
+
+                except httpx.HTTPError as e:
+                    logger.error(f"Failed to fetch data for cell {cell_index} batch {batch_number}: {e}")
                     return
-
-                fetch = result.get("has_next", False)
-                batch_number += 1
-
-                window_data.extend(data)
-
-            except requests.RequestException as e:
-                logger.error(f"Failed to fetch data for cell {cell_index} batch {batch_number}: {e}")
-                return
 
 
         # make windows
@@ -126,22 +130,23 @@ class TimeWindowManager:
             self._last_processed[cell_index] = data.copy()
             self.on_window_complete(data)
 
-    def _fetch_cells(self)->list[int]:
+    async def _fetch_cells(self) -> list[int]:
         """Fetch cells from api"""
         URL = self.storage_struct.url + self.storage_struct.endpoint.cell
 
         try:
-            response = requests.get(f"{URL}", timeout=30)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{URL}", timeout=30.0)
+                response.raise_for_status()
 
-            result = response.json()
+                result = response.json()
 
-            if not isinstance(result, list):
-                logger.warning(f"[ABORTING] Unexpected response format: {result}")
-                return []
+                if not isinstance(result, list):
+                    logger.warning(f"[ABORTING] Unexpected response format: {result}")
+                    return []
 
-            return result
+                return result
 
-        except requests.RequestException:
+        except httpx.HTTPError:
             logger.error("Failed to fetch cells")
             return []

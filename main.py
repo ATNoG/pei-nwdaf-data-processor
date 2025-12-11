@@ -101,7 +101,7 @@ async def watermark_task(window_manager:TimeWindowManager) -> None:
         check_time = time.time()
         while current_time + WINDOW_DURATION + ALLOWED_LATENESS <= check_time:
             current_time += WINDOW_DURATION
-            window_manager.advance_watermark(current_time)
+            await window_manager.advance_watermark(current_time)
     else:
         current_time = int(time.time())
         window_manager.set_initial_watermark(current_time)
@@ -112,7 +112,7 @@ async def watermark_task(window_manager:TimeWindowManager) -> None:
         # make windows
         current_time += WINDOW_DURATION
         start = time.time()
-        window_manager.advance_watermark(current_time)
+        await window_manager.advance_watermark(current_time)
         end = time.time()
         await asyncio.sleep(max(0, WINDOW_DURATION - (end - start))) # already spent some time
 
