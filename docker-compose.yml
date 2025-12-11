@@ -1,17 +1,31 @@
 services:
-  nwdaf:
-    container_name: data-processor
+  processor1:
+    container_name: data-processor-60s
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       - KAFKA_HOST=kafka
       - KAFKA_PORT=${KAFKA_PORT:-9092}
-      - KAFKA_TOPIC=network.data.ingested
-      - OUTPUT_TOPIC=${OUTPUT_TOPIC:-network.data.processed}
-      - WINDOW_DURATION=${WINDOW_DURATION:-60}
-      - ALLOWED_LATENESS=${ALLOWED_LATENESS:-30}
+      - WINDOW_DURATION=60
+      - ALLOWED_LATENESS=20
       - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-ZERO_FILL}
+      - DATA_STORAGE_API_URL=${DATA_STORAGE_API_URL}
+    networks:
+      - nwdaf-network
+
+  processor2:
+    container_name: data-processor-300s
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_HOST=kafka
+      - KAFKA_PORT=${KAFKA_PORT:-9092}
+      - WINDOW_DURATION=300
+      - ALLOWED_LATENESS=30
+      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-ZERO_FILL}
+      - DATA_STORAGE_API_URL=${DATA_STORAGE_API_URL}
     networks:
       - nwdaf-network
 
