@@ -36,15 +36,6 @@ class LatencyProfile(ProcessingProfile):
         if not all(d.get("cell_index") == first_cell_index for d in data):
             return None
 
-        timestamps = [
-            d.get(cls.TIME_FIELD) for d in data
-            if d.get(cls.TIME_FIELD) is not None
-        ]
-
-        start_time =    min(timestamps) if timestamps else None
-        end_time =      max(timestamps) if timestamps else None
-
-
         # keep numeric fields only
         values: dict[str, list[float]] = {field: [] for field in cls.FIELDS}
         for entry in data:
@@ -96,7 +87,7 @@ class LatencyProfile(ProcessingProfile):
             'fields': cls.FIELDS,
             'metadata': {}  # Could be populated from configuration or cell metadata store
         }
-        
+
         # If we have last processed data, include it for forward-fill strategy
         if last_processed:
             context['last_values'] = last_processed
@@ -104,7 +95,5 @@ class LatencyProfile(ProcessingProfile):
             for field in cls.METADATA_FIELDS:
                 if field in last_processed:
                     context['metadata'][field] = last_processed[field]
-        
-        return context
 
-        
+        return context
