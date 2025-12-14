@@ -53,8 +53,8 @@ else:
 class STORAGE:
     url = f"{DATA_STORAGE_API_URL}/api/v1/"
     class endpoint:
-        cell = "cell/"
-        raw = "raw/"
+        cell = "cell"
+        raw = "raw"
 
 
 # Map strategy name to strategy instance
