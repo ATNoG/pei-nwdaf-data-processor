@@ -49,7 +49,7 @@ utils/topic.sh [container] "network.data.processed" -c
 uvicorn receiver:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 4. Run the Processor Component
+### 4. Run the Producer Component
 
 ```bash
 python3 producer/main.py -a "http://localhost:8000/receive" -f dataset/hbahn/latency_data.csv
