@@ -1,8 +1,9 @@
 from typing import Callable
 import logging
 import asyncio
+from collections import defaultdict
 from src.profiles.processing_profile import ProcessingProfile
-from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy
+from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy, KNNStrategy
 import httpx
 
 logger = logging.getLogger("TimeWindowManager")
@@ -25,7 +26,7 @@ class TimeWindowManager:
         self.window_size = window_size
         self.on_window_complete = on_window_complete or print
         self.processing_profiles = processing_profiles or []
-        self.empty_window_strategy = empty_window_strategy or SkipStrategy
+        self.empty_window_strategy = empty_window_strategy or SkipStrategy()
 
         self.storage_struct = storage_struct
 
@@ -33,7 +34,14 @@ class TimeWindowManager:
         self._last_processed: dict[int, dict] = {}  # Track last processed window per cell
         self._can_change_watermark = True
 
-    def set_initial_watermark(self, watermark:int)->None:
+        # History buffer for KNN strategy (shared across all profiles)
+        self._history_buffer: dict[str, list[dict]] = defaultdict(list)
+
+        # If using KNN strategy, inject the shared history buffer
+        if isinstance(self.empty_window_strategy, KNNStrategy):
+            self.empty_window_strategy.history_buffer = self._history_buffer
+
+    def set_initial_watermark(self, watermark: int) -> None:
         if self._can_change_watermark:
             self.watermark = watermark
             self._can_change_watermark = False
@@ -102,9 +110,8 @@ class TimeWindowManager:
                     logger.error(f"Failed to fetch data for cell {cell_index} batch {batch_number}: {e}")
                     return
 
-
         # make windows
-        is_empty:bool = len(window_data) == 0
+        is_empty: bool = len(window_data) == 0
         for profile in self.processing_profiles:
 
             if is_empty:
@@ -112,10 +119,10 @@ class TimeWindowManager:
                 last_processed = self._last_processed.get(cell_index)
                 data = profile.handle_empty_window(
                     cell_id=str(cell_index),
-                     window_start=start_time,
-                     window_end=end_time,
-                     strategy=self.empty_window_strategy,
-                     last_processed=last_processed)
+                    window_start=start_time,
+                    window_end=end_time,
+                    strategy=self.empty_window_strategy,
+                    last_processed=last_processed)
             else:
                 data = profile.process(window_data)
 
@@ -128,6 +135,12 @@ class TimeWindowManager:
 
             # Store as last processed for this cell (only if it's not an empty window)
             self._last_processed[cell_index] = data.copy()
+
+            # Add to KNN history buffer if not an empty window
+            # This happens AFTER processing so KNN has access to aggregated stats
+            if not is_empty and isinstance(self.empty_window_strategy, KNNStrategy):
+                self.empty_window_strategy.add_to_history(str(cell_index), data)
+
             self.on_window_complete(data)
 
     async def _fetch_cells(self) -> list[int]:

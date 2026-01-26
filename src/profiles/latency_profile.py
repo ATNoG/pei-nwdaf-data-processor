@@ -6,7 +6,8 @@ from src.empty_window_strategy import EmptyWindowStrategy
 class LatencyProfile(ProcessingProfile):
     FIELDS = ["rsrp", "sinr", "rsrq", "mean_latency", "cqi"]
     TIME_FIELD = "timestamp"
-    METADATA_FIELDS = ["network", "primary_bandwidth", "ul_bandwidth"]
+    # Added physical_cellid and server_ip for KNN matching if available
+    METADATA_FIELDS = ["network", "primary_bandwidth", "ul_bandwidth", "physical_cellid", "server_ip"]
 
     @classmethod
     @override
@@ -31,7 +32,8 @@ class LatencyProfile(ProcessingProfile):
         network = data[0].get("network")
         primary_bandwidth = data[0].get("primary_bandwidth")
         ul_bandwidth = data[0].get("ul_bandwidth")
-
+        physical_cellid = data[0].get("physical_cellid")
+        server_ip = data[0].get("server_ip")
 
         if not all(d.get("cell_index") == first_cell_index for d in data):
             return None
@@ -70,12 +72,14 @@ class LatencyProfile(ProcessingProfile):
                 }
 
         return {
-            "type":"latency",
+            "type": "latency",
             "cell_index": first_cell_index,
-            "network":network,
+            "network": network,
             "sample_count": total_samples,
-            "primary_bandwidth":primary_bandwidth,
-            "ul_bandwidth":ul_bandwidth,
+            "primary_bandwidth": primary_bandwidth,
+            "ul_bandwidth": ul_bandwidth,
+            "physical_cellid": physical_cellid,
+            "server_ip": server_ip,
             **stats
         }
 
@@ -85,15 +89,36 @@ class LatencyProfile(ProcessingProfile):
         """Provide latency profile specific context for empty window handling."""
         context = {
             'fields': cls.FIELDS,
-            'metadata': {}  # Could be populated from configuration or cell metadata store
+            'metadata': {}
         }
 
-        # If we have last processed data, include it for forward-fill strategy
+        # If we have last processed data, include it for strategies that need it
         if last_processed:
             context['last_values'] = last_processed
+
             # Extract metadata from last processed if available
             for field in cls.METADATA_FIELDS:
                 if field in last_processed:
                     context['metadata'][field] = last_processed[field]
+
+            # For KNN: Extract current network state from the last processed window
+            # This represents the most recent known network conditions
+            network_state = {}
+            for field in ['rsrp', 'sinr', 'rsrq', 'rssi']:
+                if field in last_processed and isinstance(last_processed[field], dict):
+                    # Use the mean as the current state indicator
+                    mean_val = last_processed[field].get('mean')
+                    if mean_val is not None:
+                        network_state[field] = mean_val
+
+            # Add physical_cellid and server_ip if available (for categorical matching)
+            if 'physical_cellid' in last_processed and last_processed['physical_cellid'] is not None:
+                network_state['physical_cellid'] = last_processed['physical_cellid']
+            if 'server_ip' in last_processed and last_processed['server_ip'] is not None:
+                network_state['server_ip'] = last_processed['server_ip']
+
+            # Add network state to context for KNN strategy
+            if network_state:
+                context['current_network_state'] = network_state
 
         return context
