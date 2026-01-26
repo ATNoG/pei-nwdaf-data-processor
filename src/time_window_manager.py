@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from collections import defaultdict
+from typing import Callable
 from src.profiles.processing_profile import ProcessingProfile
 from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy, KNNStrategy
 import httpx
@@ -18,7 +19,7 @@ class TimeWindowManager:
         self,
         window_size: int,
         storage_struct,
-        on_window_complete: callable | None = None,                  # callback for completed windows
+        on_window_complete: Callable | None = None,                  # callback for completed windows
         processing_profiles: list[ProcessingProfile] | None = None,
         empty_window_strategy: EmptyWindowStrategy | None = None,
     ):
