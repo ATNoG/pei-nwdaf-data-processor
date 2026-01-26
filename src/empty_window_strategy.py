@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Tuple
-import numpy as np
 from datetime import datetime
 from collections import defaultdict
 
@@ -102,15 +101,23 @@ class ForwardFillStrategy(EmptyWindowStrategy):
         return last_values
 
 class KNNStrategy(EmptyWindowStrategy):
-    """Fill empty windows using K-Nearest Neighbors based on network context"""
+    """
+    Fill empty windows using Time-based K-Nearest Neighbors.
+
+    This simplified KNN approach uses only temporal features (hour, day_of_week, is_weekend)
+    to find similar historical windows. It provides the best accuracy with minimal complexity.
+
+    Replaces the original full KNN which used 10+ features with manual weights.
+    See docs/STRATEGY_COMPARISON_REPORT.md for detailed comparison.
+    """
 
     def __init__(self, k: int = 5, max_history_hours: int = 168,
                  history_buffer: Optional[Dict[str, List[Dict]]] = None):
         """
-        Initialize KNN strategy.
+        Initialize Time-based KNN strategy.
 
         Args:
-            k: Number of nearest neighbors to use
+            k: Number of nearest neighbors to use (default: 5)
             max_history_hours: Maximum hours of history to search (default: 1 week)
             history_buffer: External history buffer (dict[cell_id -> list of windows])
                            If None, creates internal buffer (not recommended for production)
@@ -153,21 +160,18 @@ class KNNStrategy(EmptyWindowStrategy):
     def handle(self, cell_id: str, window_start: int, window_end: int,
                context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
         """
-        Fill empty window using KNN based on network conditions and temporal features.
+        Fill empty window using Time-based KNN.
 
         Context should contain:
             - fields: List of field names to fill
-            - metadata: Dict of non-metric metadata (network, cell_id, etc.)
-            - current_network_state: Dict with current network metrics:
-                - rsrp, rssi, sinr, rsrq (signal quality)
-                - physical_cellid (optional, for multi-cell scenarios)
-                - server_ip (optional, for server-specific patterns)
+            - metadata: Dict of non-metric metadata (network, bandwidth, etc.)
+            - last_values: Optional dict with last known processed values (for fallback)
         """
         if not context:
             return None
 
-        # Extract features for similarity matching
-        features = self._extract_features(window_start, context)
+        # Extract temporal features
+        features = self._extract_temporal_features(window_start)
 
         # Find K nearest neighbors from history
         candidates = self._get_candidates(cell_id, window_start)
@@ -175,7 +179,7 @@ class KNNStrategy(EmptyWindowStrategy):
             # Fallback to forward fill if no history available
             return self._fallback_fill(cell_id, window_start, window_end, context)
 
-        neighbors = self._find_knn(features, candidates, context)
+        neighbors = self._find_knn(features, candidates)
         if not neighbors:
             return self._fallback_fill(cell_id, window_start, window_end, context)
 
@@ -186,153 +190,73 @@ class KNNStrategy(EmptyWindowStrategy):
 
         return filled_window
 
-    def _extract_features(self, timestamp: int, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract features for similarity matching"""
+    def _extract_temporal_features(self, timestamp: int) -> Dict[str, Any]:
+        """Extract only temporal features for similarity matching."""
         dt = datetime.fromtimestamp(timestamp)
-
-        features = {
+        return {
             'hour': dt.hour,
             'day_of_week': dt.weekday(),
             'is_weekend': dt.weekday() >= 5,
         }
 
-        # Add network state features if available
-        net_state = context.get('current_network_state', {})
-        for key in ['rsrp', 'rssi', 'sinr', 'rsrq', 'physical_cellid', 'server_ip']:
-            if key in net_state and net_state[key] is not None:
-                features[key] = net_state[key]
-
-        # Add previous window metrics if available
-        if 'last_values' in context:
-            last = context['last_values']
-            for field in ['mean_latency', 'packet_loss', 'rsrp', 'sinr']:
-                if field in last and isinstance(last[field], dict):
-                    features[f'prev_{field}'] = last[field].get('mean')
-
-        return features
-
     def _get_candidates(self, cell_id: str, current_time: int) -> List[Dict]:
-        """Get candidate windows from history (only from the past)"""
+        """Get candidate windows from history (only from the past)."""
         candidates = []
 
         # Convert to string for consistent keying
         cell_key = str(cell_id)
 
-        # Primary: Same cell_id
+        # Get windows from the same cell, only from before current_time
         for window in self.history_buffer.get(cell_key, []):
             if window.get('window_end', 0) < current_time:
                 candidates.append(window)
 
-        # If not enough candidates, could expand to nearby cells/similar conditions
-        # For now, keeping it simple with same cell only
-
         return candidates
 
-    def _find_knn(self, features: Dict[str, Any], candidates: List[Dict],
-                  context: Dict[str, Any]) -> List[Tuple[Dict, float]]:
-        """Find K nearest neighbors based on feature distance"""
+    def _find_knn(self, features: Dict[str, Any], candidates: List[Dict]) -> List[Tuple[Dict, float]]:
+        """Find K nearest neighbors based on temporal distance."""
         distances = []
 
         for candidate in candidates:
-            distance = self._calculate_distance(features, candidate, context)
+            distance = self._calculate_temporal_distance(features, candidate)
             distances.append((candidate, distance))
 
         # Sort by distance and take top K
         distances.sort(key=lambda x: x[1])
         return distances[:self.k]
 
-    def _calculate_distance(self, features: Dict[str, Any],
-                           candidate: Dict[str, Any],
-                           context: Dict[str, Any]) -> float:
+    def _calculate_temporal_distance(self, features: Dict[str, Any], candidate: Dict[str, Any]) -> float:
         """
-        Calculate weighted distance between current features and candidate window.
-        Lower distance = more similar.
+        Calculate distance based on temporal features only.
+
+        Uses:
+        - Circular distance for hour (handles 23:00 vs 00:00 correctly)
+        - Binary distance for weekend vs weekday
         """
         distance = 0.0
-        weights = {
-            'hour': 2.0,              # Temporal similarity is important
-            'day_of_week': 1.0,
-            'rsrp': 5.0,              # Signal strength very important
-            'sinr': 5.0,              # Signal quality very important
-            'rssi': 3.0,
-            'rsrq': 3.0,
-            'physical_cellid': 10.0,  # Same physical cell = highly similar
-            'server_ip': 2.0,         # Same server target
-            'prev_mean_latency': 3.0, # Recent history context
-            'prev_rsrp': 4.0,
-            'prev_sinr': 4.0,
-        }
 
-        for key, weight in weights.items():
-            if key not in features:
-                continue
+        # Get candidate's temporal info from window_end timestamp
+        candidate_time = candidate.get('window_end', 0)
+        candidate_dt = datetime.fromtimestamp(candidate_time)
 
-            feature_val = features[key]
+        # Hour distance (circular: 23 and 0 are close)
+        hour_diff = abs(features['hour'] - candidate_dt.hour)
+        hour_dist = min(hour_diff, 24 - hour_diff) / 12.0  # Normalize to [0, 1]
+        distance += hour_dist
 
-            # Extract candidate value from appropriate location
-            if key.startswith('prev_'):
-                field = key.replace('prev_', '')
-                candidate_val = candidate.get(field, {})
-                if isinstance(candidate_val, dict):
-                    candidate_val = candidate_val.get('mean')
-            else:
-                # Direct access - candidate windows have flat structure
-                # Try to get the field directly (for metadata fields like physical_cellid, server_ip)
-                candidate_val = candidate.get(key)
-                # If it's a metric field with stats, get the mean
-                if isinstance(candidate_val, dict):
-                    candidate_val = candidate_val.get('mean')
-
-            if candidate_val is None:
-                continue
-
-            # Calculate component distance based on type
-            if key == 'physical_cellid' or key == 'server_ip':
-                # Categorical: 0 if match, 1 if not
-                component_dist = 0.0 if feature_val == candidate_val else 1.0
-            elif key == 'hour':
-                # Circular distance for hour (0-23)
-                diff = abs(feature_val - candidate_val)
-                component_dist = min(diff, 24 - diff) / 12.0  # Normalize to [0, 1]
-            elif key == 'day_of_week':
-                # Treat weekend vs weekday as more important than specific day
-                is_weekend_feature = feature_val >= 5
-                is_weekend_candidate = candidate_val >= 5
-                component_dist = 0.0 if is_weekend_feature == is_weekend_candidate else 0.5
-            else:
-                # Numeric: normalized absolute difference
-                # For RSRP/SINR, assume typical ranges
-                if key in ['rsrp', 'prev_rsrp']:
-                    range_val = 50  # RSRP typically ranges ~50 dBm
-                elif key in ['sinr', 'prev_sinr']:
-                    range_val = 30  # SINR typically ranges ~30 dB
-                elif key in ['rssi']:
-                    range_val = 50
-                elif key in ['rsrq']:
-                    range_val = 20
-                elif key in ['prev_mean_latency']:
-                    range_val = 100  # Latency can range widely
-                else:
-                    range_val = max(abs(feature_val), abs(candidate_val), 1)
-
-                component_dist = abs(feature_val - candidate_val) / range_val
-
-            distance += weight * component_dist
+        # Day of week distance (weekend vs weekday is more important than specific day)
+        is_weekend_candidate = candidate_dt.weekday() >= 5
+        day_dist = 0.0 if features['is_weekend'] == is_weekend_candidate else 0.5
+        distance += day_dist
 
         return distance
 
     def _aggregate_neighbors(self, neighbors: List[Tuple[Dict, float]],
                             cell_id: str, window_start: int, window_end: int,
                             context: Dict[str, Any]) -> Dict:
-        """Aggregate K neighbors using weighted average based on distance"""
+        """Aggregate K neighbors using simple average (all neighbors equal weight)."""
         if not neighbors:
             return None
-
-        # Calculate weights (inverse of distance, avoiding division by zero)
-        distances = [d for _, d in neighbors]
-        weights = [1.0 / (d + 0.001) for d in distances]
-        total_weight = sum(weights)
-        normalized_weights = [w / total_weight for w in weights]
 
         # Initialize result
         result = {
@@ -349,7 +273,7 @@ class KNNStrategy(EmptyWindowStrategy):
         if 'metadata' in context:
             result.update(context['metadata'])
 
-        # Aggregate each field
+        # Aggregate each field using simple average
         fields = context.get('fields', [])
         for field in fields:
             field_values = {
@@ -359,20 +283,19 @@ class KNNStrategy(EmptyWindowStrategy):
                 'std': [],
             }
 
-            # Collect values from neighbors
-            for (neighbor, _), weight in zip(neighbors, normalized_weights):
+            # Collect values from all neighbors (equal weight)
+            for neighbor, _ in neighbors:
                 if field in neighbor and isinstance(neighbor[field], dict):
                     for stat in ['min', 'max', 'mean', 'std']:
                         val = neighbor[field].get(stat)
                         if val is not None:
-                            field_values[stat].append((val, weight))
+                            field_values[stat].append(val)
 
-            # Compute weighted averages
+            # Compute simple averages
             result[field] = {}
             for stat in ['min', 'max', 'mean', 'std']:
                 if field_values[stat]:
-                    weighted_avg = sum(val * w for val, w in field_values[stat])
-                    result[field][stat] = weighted_avg
+                    result[field][stat] = sum(field_values[stat]) / len(field_values[stat])
                 else:
                     result[field][stat] = None
 
@@ -382,7 +305,7 @@ class KNNStrategy(EmptyWindowStrategy):
 
     def _fallback_fill(self, cell_id: str, window_start: int, window_end: int,
                       context: Dict[str, Any]) -> Optional[Dict]:
-        """Fallback to forward fill when no neighbors available"""
+        """Fallback to forward fill when no neighbors available."""
         if 'last_values' in context:
             # Use forward fill as fallback
             forward_fill = ForwardFillStrategy()
