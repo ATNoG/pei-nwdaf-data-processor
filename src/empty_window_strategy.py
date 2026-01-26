@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any
 from datetime import datetime
 from collections import defaultdict
 
@@ -9,7 +9,7 @@ class EmptyWindowStrategy(ABC):
 
     @abstractmethod
     def handle(self, cell_id: str, window_start: int, window_end: int,
-               context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+               context: dict[str, Any] | None = None) -> dict | None:
         """
         Handle an empty window.
 
@@ -29,7 +29,7 @@ class SkipStrategy(EmptyWindowStrategy):
     """Skip empty windows - don't generate any output"""
 
     def handle(self, cell_id: str, window_start: int, window_end: int,
-               context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+               context: dict[str, Any] | None = None) -> dict | None:
         """Return None to skip processing this window"""
         return None
 
@@ -38,7 +38,7 @@ class ZeroFillStrategy(EmptyWindowStrategy):
     """Fill empty windows with zero/null values"""
 
     def handle(self, cell_id: str, window_start: int, window_end: int,
-               context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+               context: dict[str, Any] | None = None) -> dict | None:
         """
         Generate a record with zero/null values for all metrics.
 
@@ -78,7 +78,7 @@ class ForwardFillStrategy(EmptyWindowStrategy):
     """Forward-fill empty windows with the last known values"""
 
     def handle(self, cell_id: str, window_start: int, window_end: int,
-               context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+               context: dict[str, Any] | None = None) -> dict | None:
         """
         Generate a record using the last known values.
 
@@ -112,7 +112,7 @@ class KNNStrategy(EmptyWindowStrategy):
     """
 
     def __init__(self, k: int = 5, max_history_hours: int = 168,
-                 history_buffer: Optional[Dict[str, List[Dict]]] = None):
+                 history_buffer: dict[str, list[dict]] | None = None):
         """
         Initialize Time-based KNN strategy.
 
@@ -128,7 +128,7 @@ class KNNStrategy(EmptyWindowStrategy):
         self.history_buffer = history_buffer if history_buffer is not None else defaultdict(list)
         self._owns_buffer = history_buffer is None
 
-    def add_to_history(self, cell_id: str, window_data: Dict[str, Any]):
+    def add_to_history(self, cell_id: str, window_data: dict[str, Any]):
         """
         Add a processed window to the history buffer for future KNN lookups.
         Call this for every non-empty window processed.
@@ -158,7 +158,7 @@ class KNNStrategy(EmptyWindowStrategy):
         ]
 
     def handle(self, cell_id: str, window_start: int, window_end: int,
-               context: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+               context: dict[str, Any] | None = None) -> dict | None:
         """
         Fill empty window using Time-based KNN.
 
@@ -190,7 +190,7 @@ class KNNStrategy(EmptyWindowStrategy):
 
         return filled_window
 
-    def _extract_temporal_features(self, timestamp: int) -> Dict[str, Any]:
+    def _extract_temporal_features(self, timestamp: int) -> dict[str, Any]:
         """Extract only temporal features for similarity matching."""
         dt = datetime.fromtimestamp(timestamp)
         return {
@@ -199,7 +199,7 @@ class KNNStrategy(EmptyWindowStrategy):
             'is_weekend': dt.weekday() >= 5,
         }
 
-    def _get_candidates(self, cell_id: str, current_time: int) -> List[Dict]:
+    def _get_candidates(self, cell_id: str, current_time: int) -> list[dict]:
         """Get candidate windows from history (only from the past)."""
         candidates = []
 
@@ -213,7 +213,7 @@ class KNNStrategy(EmptyWindowStrategy):
 
         return candidates
 
-    def _find_knn(self, features: Dict[str, Any], candidates: List[Dict]) -> List[Tuple[Dict, float]]:
+    def _find_knn(self, features: dict[str, Any], candidates: list[dict]) -> list[tuple[dict, float]]:
         """Find K nearest neighbors based on temporal distance."""
         distances = []
 
@@ -225,7 +225,7 @@ class KNNStrategy(EmptyWindowStrategy):
         distances.sort(key=lambda x: x[1])
         return distances[:self.k]
 
-    def _calculate_temporal_distance(self, features: Dict[str, Any], candidate: Dict[str, Any]) -> float:
+    def _calculate_temporal_distance(self, features: dict[str, Any], candidate: dict[str, Any]) -> float:
         """
         Calculate distance based on temporal features only.
 
@@ -251,9 +251,9 @@ class KNNStrategy(EmptyWindowStrategy):
 
         return distance
 
-    def _aggregate_neighbors(self, neighbors: List[Tuple[Dict, float]],
+    def _aggregate_neighbors(self, neighbors: list[tuple[dict, float]],
                             cell_id: str, window_start: int, window_end: int,
-                            context: Dict[str, Any]) -> Dict:
+                            context: dict[str, Any]) -> dict:
         """Aggregate K neighbors using simple average (all neighbors equal weight)."""
         if not neighbors:
             return None
@@ -304,7 +304,7 @@ class KNNStrategy(EmptyWindowStrategy):
         return result
 
     def _fallback_fill(self, cell_id: str, window_start: int, window_end: int,
-                      context: Dict[str, Any]) -> Optional[Dict]:
+                      context: dict[str, Any]) -> dict | None:
         """Fallback to forward fill when no neighbors available."""
         if 'last_values' in context:
             # Use forward fill as fallback

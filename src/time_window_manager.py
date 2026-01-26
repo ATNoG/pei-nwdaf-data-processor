@@ -1,4 +1,3 @@
-from typing import Callable
 import logging
 import asyncio
 from collections import defaultdict
@@ -19,7 +18,7 @@ class TimeWindowManager:
         self,
         window_size: int,
         storage_struct,
-        on_window_complete: Callable | None = None,                  # callback for completed windows
+        on_window_complete: callable | None = None,                  # callback for completed windows
         processing_profiles: list[ProcessingProfile] | None = None,
         empty_window_strategy: EmptyWindowStrategy | None = None,
     ):

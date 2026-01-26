@@ -1,4 +1,4 @@
-from typing import override, Optional, Dict, Any
+from typing import Any, override
 from statistics import mean, stdev
 from src.profiles.processing_profile import ProcessingProfile
 from src.empty_window_strategy import EmptyWindowStrategy
@@ -85,7 +85,7 @@ class LatencyProfile(ProcessingProfile):
 
     @classmethod
     @override
-    def get_empty_window_context(cls, cell_id: str, last_processed: Optional[Dict] = None) -> Dict[str, Any]:
+    def get_empty_window_context(cls, cell_id: str, last_processed: dict | None = None) -> dict[str, Any]:
         """Provide latency profile specific context for empty window handling."""
         context = {
             'fields': cls.FIELDS,
