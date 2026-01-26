@@ -15,6 +15,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#logging.getLogger("asyncio").setLevel(logging.WARNING)
+#logging.getLogger("urllib3").setLevel(logging.WARNING)
+#logging.getLogger("requests").setLevel(logging.WARNING)
+
 # Kafka setup
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = os.getenv("KAFKA_PORT", "9092")
