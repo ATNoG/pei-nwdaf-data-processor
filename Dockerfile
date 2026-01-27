@@ -19,7 +19,8 @@ RUN mkdir utils && cd utils \
 && git checkout origin/main kafka/src/kmw.py \
 && mv kafka/src/kmw.py . \
 && rm -rf .git \
-&& rmdir -p kafka/src
+&& rmdir -p kafka/src \
+&& touch __init__.py
 
 
 # Copy dependency files
