@@ -108,7 +108,6 @@ class KNNStrategy(EmptyWindowStrategy):
     to find similar historical windows. It provides the best accuracy with minimal complexity.
 
     Replaces the original full KNN which used 10+ features with manual weights.
-    See docs/STRATEGY_COMPARISON_REPORT.md for detailed comparison.
     """
 
     def __init__(self, k: int = 5, max_history_hours: int = 168,

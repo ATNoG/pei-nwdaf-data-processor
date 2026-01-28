@@ -1,3 +1,4 @@
+import json
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 from src.time_window_manager import TimeWindowManager
@@ -819,3 +820,511 @@ async def test_parallel_cell_processing(mock_get):
     assert len(results) == 3
     # Call order shows requests were made (may not be sequential due to async)
     assert len(call_order) == 3
+
+
+# ============================================================================
+# SLIDING WINDOW TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_basic(mock_get):
+    """Test that sliding windows accumulate data across ticks."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    def make_slice_response(cell_id, timestamp, rsrp, sinr, rsrq, latency, cqi):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": timestamp, "rsrp": rsrp, "sinr": sinr,
+                 "rsrq": rsrq, "mean_latency": latency, "cqi": cqi, "network": "net1"}
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    # Distinct values per slice so aggregated stats visibly change
+    mock_get.side_effect = [
+        mock_cells_response, make_slice_response(1, 5,  rsrp=-90, sinr=10.0, rsrq=-12, latency=30, cqi=6),
+        mock_cells_response, make_slice_response(1, 15, rsrp=-70, sinr=25.0, rsrq=-8,  latency=10, cqi=12),
+        mock_cells_response, make_slice_response(1, 25, rsrp=-80, sinr=18.0, rsrq=-10, latency=20, cqi=9),
+    ]
+
+    def collect(data):
+        results.append(data)
+        print(f"\n[sliding_window_basic] Window #{len(results)}:")
+        print(json.dumps(data, indent=2, default=str))
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=collect,
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    await manager.advance_watermark(20)
+    await manager.advance_watermark(30)
+
+    assert len(results) == 3
+    # Each tick accumulates more data in the buffer
+    assert results[0]["sample_count"] == 1  # only slice [0,10)
+    assert results[1]["sample_count"] == 2  # slices [0,10) + [10,20)
+    assert results[2]["sample_count"] == 3  # slices [0,10) + [10,20) + [20,30)
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_eviction(mock_get):
+    """Test that old data is evicted when it falls outside the window."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    def make_slice_response(cell_id, timestamp, rsrp, sinr, rsrq, latency, cqi):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": timestamp, "rsrp": rsrp, "sinr": sinr,
+                 "rsrq": rsrq, "mean_latency": latency, "cqi": cqi}
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    # window_size=20, slide_interval=10
+    # tick 1: watermark=10, window=[0,10),  fetch [0,10)
+    # tick 2: watermark=20, window=[0,20),  fetch [10,20)
+    # tick 3: watermark=30, window=[10,30), fetch [20,30) -> evict data with ts < 10
+    # tick 4: watermark=40, window=[20,40), fetch [30,40) -> evict data with ts < 20
+    # Distinct values so eviction visibly changes min/max/mean
+    mock_get.side_effect = [
+        mock_cells_response, make_slice_response(1, 5,  rsrp=-100, sinr=5.0,  rsrq=-15, latency=50, cqi=3),
+        mock_cells_response, make_slice_response(1, 15, rsrp=-70,  sinr=25.0, rsrq=-7,  latency=10, cqi=13),
+        mock_cells_response, make_slice_response(1, 25, rsrp=-85,  sinr=15.0, rsrq=-11, latency=25, cqi=8),
+        mock_cells_response, make_slice_response(1, 35, rsrp=-60,  sinr=30.0, rsrq=-5,  latency=5,  cqi=15),
+    ]
+
+    def collect(data):
+        results.append(data)
+        print(f"\n[sliding_window_eviction] Window #{len(results)}:")
+        print(json.dumps(data, indent=2, default=str))
+
+    manager = TimeWindowManager(
+        window_size=20,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=collect,
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    await manager.advance_watermark(20)
+    await manager.advance_watermark(30)
+    await manager.advance_watermark(40)
+
+    assert len(results) == 4
+    assert results[0]["sample_count"] == 1  # [ts=5]
+    assert results[1]["sample_count"] == 2  # [ts=5, ts=15]
+    assert results[2]["sample_count"] == 2  # [ts=15, ts=25] — ts=5 evicted
+    assert results[3]["sample_count"] == 2  # [ts=25, ts=35] — ts=15 evicted
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_overlapping_sample_counts(mock_get):
+    """Test that overlapping windows have correct sample counts reflecting buffered data."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    # Each slice has 5 records with different metric values per batch
+    slice_metrics = [
+        # Slice 1: poor signal
+        {"rsrp": -100, "sinr": 5.0,  "rsrq": -15, "mean_latency": 50, "cqi": 3},
+        # Slice 2: moderate signal
+        {"rsrp": -80,  "sinr": 15.0, "rsrq": -10, "mean_latency": 25, "cqi": 8},
+        # Slice 3: good signal
+        {"rsrp": -65,  "sinr": 25.0, "rsrq": -6,  "mean_latency": 10, "cqi": 13},
+        # Slice 4: excellent signal
+        {"rsrp": -55,  "sinr": 32.0, "rsrq": -4,  "mean_latency": 4,  "cqi": 15},
+    ]
+
+    def make_multi_slice_response(cell_id, timestamps, metrics):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": ts, **metrics}
+                for ts in timestamps
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    # window_size=30, slide_interval=10, 5 records per slice
+    mock_get.side_effect = [
+        mock_cells_response, make_multi_slice_response(1, [1, 2, 3, 4, 5],    slice_metrics[0]),
+        mock_cells_response, make_multi_slice_response(1, [11, 12, 13, 14, 15], slice_metrics[1]),
+        mock_cells_response, make_multi_slice_response(1, [21, 22, 23, 24, 25], slice_metrics[2]),
+        mock_cells_response, make_multi_slice_response(1, [31, 32, 33, 34, 35], slice_metrics[3]),
+    ]
+
+    def collect(data):
+        results.append(data)
+        print(f"\n[sliding_window_overlapping] Window #{len(results)}:")
+        print(json.dumps(data, indent=2, default=str))
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=collect,
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    await manager.advance_watermark(20)
+    await manager.advance_watermark(30)
+    await manager.advance_watermark(40)
+
+    assert results[0]["sample_count"] == 5   # 5 records
+    assert results[1]["sample_count"] == 10  # 5 + 5
+    assert results[2]["sample_count"] == 15  # 5 + 5 + 5 (full window)
+    assert results[3]["sample_count"] == 15  # 5 + 5 + 5 (oldest 5 evicted, newest 5 added)
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_slide_interval_equals_window_size(mock_get):
+    """When slide_interval == window_size, behavior is identical to tumbling windows."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    mock_data_response = Mock()
+    mock_data_response.json.return_value = {
+        "data": [
+            {"cell_index": 1, "timestamp": 5, "rsrp": -80, "sinr": 20.0,
+             "rsrq": -10, "mean_latency": 15, "cqi": 10, "network": "net1"}
+        ],
+        "has_next": False
+    }
+    mock_data_response.raise_for_status = Mock()
+
+    mock_get.side_effect = [mock_cells_response, mock_data_response]
+
+    manager = TimeWindowManager(
+        window_size=10,
+        slide_interval=10,  # explicitly set equal to window_size
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+
+    assert len(results) == 1
+    assert results[0]["cell_index"] == 1
+    assert results[0]["window_start"] == 0
+    assert results[0]["window_end"] == 10
+    assert results[0]["sample_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_slide_interval_validation():
+    """Test that invalid slide_interval values raise ValueError."""
+    with pytest.raises(ValueError):
+        TimeWindowManager(
+            window_size=10,
+            slide_interval=0,
+            storage_struct=MockStorage,
+            on_window_complete=lambda data: None,
+            processing_profiles=[LatencyProfile()],
+            empty_window_strategy=SkipStrategy()
+        )
+
+    with pytest.raises(ValueError):
+        TimeWindowManager(
+            window_size=10,
+            slide_interval=-5,
+            storage_struct=MockStorage,
+            on_window_complete=lambda data: None,
+            processing_profiles=[LatencyProfile()],
+            empty_window_strategy=SkipStrategy()
+        )
+
+    with pytest.raises(ValueError):
+        TimeWindowManager(
+            window_size=10,
+            slide_interval=20,
+            storage_struct=MockStorage,
+            on_window_complete=lambda data: None,
+            processing_profiles=[LatencyProfile()],
+            empty_window_strategy=SkipStrategy()
+        )
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_empty_buffer_uses_strategy(mock_get):
+    """With sliding windows, if every slice is empty, empty window strategy fires each tick."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    mock_empty = Mock()
+    mock_empty.json.return_value = {"data": [], "has_next": False}
+    mock_empty.raise_for_status = Mock()
+
+    mock_get.side_effect = [
+        mock_cells_response, mock_empty,
+        mock_cells_response, mock_empty,
+        mock_cells_response, mock_empty,
+    ]
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=ZeroFillStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    await manager.advance_watermark(20)
+    await manager.advance_watermark(30)
+
+    # ZeroFillStrategy should produce a result each tick
+    assert len(results) == 3
+    for r in results:
+        assert r["sample_count"] == 0
+        assert r["is_empty_window"] is True
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_api_error_preserves_buffer(mock_get):
+    """If the API fails for a tick, the existing buffer should be preserved for the next tick."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    def make_slice_response(cell_id, timestamp):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": timestamp, "rsrp": -80, "sinr": 20.0,
+                 "rsrq": -10, "mean_latency": 15, "cqi": 10}
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    mock_get.side_effect = [
+        mock_cells_response, make_slice_response(1, 5),     # tick 1: success
+        mock_cells_response, httpx.ConnectError("fail"),     # tick 2: API error
+        mock_cells_response, make_slice_response(1, 25),     # tick 3: success
+    ]
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)   # tick 1: buffer has [ts=5]
+    await manager.advance_watermark(20)   # tick 2: API error, cell skipped, buffer preserved
+    await manager.advance_watermark(30)   # tick 3: buffer has [ts=5, ts=25]
+
+    # tick 1 produced a result, tick 2 skipped (API error), tick 3 produced a result
+    assert len(results) == 2
+    assert results[0]["sample_count"] == 1
+    # tick 3: buffer still has ts=5 (preserved through error) plus new ts=25
+    assert results[1]["sample_count"] == 2
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_cell_disappears(mock_get):
+    """When a cell disappears from the cells endpoint, its buffer should be pruned."""
+    results = []
+
+    mock_cells_both = Mock()
+    mock_cells_both.json.return_value = [1, 2]
+    mock_cells_both.raise_for_status = Mock()
+
+    mock_cells_only1 = Mock()
+    mock_cells_only1.json.return_value = [1]
+    mock_cells_only1.raise_for_status = Mock()
+
+    def make_slice_response(cell_id, timestamp):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": timestamp, "rsrp": -80, "sinr": 20.0,
+                 "rsrq": -10, "mean_latency": 15, "cqi": 10}
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    mock_get.side_effect = [
+        mock_cells_both, make_slice_response(1, 5), make_slice_response(2, 5),   # tick 1
+        mock_cells_only1, make_slice_response(1, 15),                             # tick 2: cell 2 gone
+    ]
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    assert 2 in manager._buffers
+
+    await manager.advance_watermark(20)
+    assert 2 not in manager._buffers  # cell 2's buffer was pruned
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_new_cell_appears(mock_get):
+    """When a new cell appears, it gets a fresh buffer."""
+    results = []
+
+    mock_cells_1 = Mock()
+    mock_cells_1.json.return_value = [1]
+    mock_cells_1.raise_for_status = Mock()
+
+    mock_cells_12 = Mock()
+    mock_cells_12.json.return_value = [1, 2]
+    mock_cells_12.raise_for_status = Mock()
+
+    def make_slice_response(cell_id, timestamp):
+        resp = Mock()
+        resp.json.return_value = {
+            "data": [
+                {"cell_index": cell_id, "timestamp": timestamp, "rsrp": -80, "sinr": 20.0,
+                 "rsrq": -10, "mean_latency": 15, "cqi": 10}
+            ],
+            "has_next": False
+        }
+        resp.raise_for_status = Mock()
+        return resp
+
+    mock_get.side_effect = [
+        mock_cells_1, make_slice_response(1, 5),                                   # tick 1
+        mock_cells_12, make_slice_response(1, 15), make_slice_response(2, 15),     # tick 2
+    ]
+
+    manager = TimeWindowManager(
+        window_size=30,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=SkipStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+    await manager.advance_watermark(10)
+    assert 1 in manager._buffers
+    assert 2 not in manager._buffers
+
+    await manager.advance_watermark(20)
+    assert 2 in manager._buffers
+    # Cell 2 should have only its first slice
+    cell2_results = [r for r in results if r["cell_index"] == 2]
+    assert len(cell2_results) == 1
+    assert cell2_results[0]["sample_count"] == 1
+
+
+@pytest.mark.asyncio
+@patch('httpx.AsyncClient.get', new_callable=AsyncMock)
+async def test_sliding_window_warm_up_stamps(mock_get):
+    """During warm-up, window_start and window_end should be correctly computed."""
+    results = []
+
+    mock_cells_response = Mock()
+    mock_cells_response.json.return_value = [1]
+    mock_cells_response.raise_for_status = Mock()
+
+    mock_empty = Mock()
+    mock_empty.json.return_value = {"data": [], "has_next": False}
+    mock_empty.raise_for_status = Mock()
+
+    mock_get.side_effect = [
+        mock_cells_response, mock_empty,  # tick 1: watermark=10
+        mock_cells_response, mock_empty,  # tick 2: watermark=20
+        mock_cells_response, mock_empty,  # tick 6: watermark=60
+        mock_cells_response, mock_empty,  # tick 7: watermark=70
+    ]
+
+    manager = TimeWindowManager(
+        window_size=60,
+        slide_interval=10,
+        storage_struct=MockStorage,
+        on_window_complete=lambda data: results.append(data),
+        processing_profiles=[LatencyProfile()],
+        empty_window_strategy=ZeroFillStrategy()
+    )
+
+    manager.set_initial_watermark(0)
+
+    # Tick 1: watermark=10, window_start = max(0, 10-60) = 0
+    await manager.advance_watermark(10)
+    assert results[0]["window_start"] == 0
+    assert results[0]["window_end"] == 10
+
+    # Tick 2: watermark=20, window_start = max(0, 20-60) = 0
+    await manager.advance_watermark(20)
+    assert results[1]["window_start"] == 0
+    assert results[1]["window_end"] == 20
+
+    # Jump to tick 6: watermark=60, window_start = max(0, 60-60) = 0
+    await manager.advance_watermark(60)
+    assert results[2]["window_start"] == 0
+    assert results[2]["window_end"] == 60
+
+    # Tick 7: watermark=70, window_start = max(0, 70-60) = 10
+    await manager.advance_watermark(70)
+    assert results[3]["window_start"] == 10
+    assert results[3]["window_end"] == 70
