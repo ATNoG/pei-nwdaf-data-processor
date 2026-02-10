@@ -26,6 +26,7 @@ OUTPUT_TOPIC = "network.data.processed"
 
 # Time window setup, in seconds
 WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "60"))
+SLIDE_INTERVAL = int(os.getenv("SLIDE_INTERVAL", str(WINDOW_DURATION)))
 ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
 EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "ZERO_FILL")
 
@@ -76,6 +77,7 @@ logger.info(f"""
 Data processor started:
 allowed_lateness      : {ALLOWED_LATENESS}
 window_duration       : {WINDOW_DURATION}
+slide_interval        : {SLIDE_INTERVAL}
 empty_window_strategy : {EMPTY_WINDOW_STRATEGY.__class__.__name__}
 """)
 
@@ -131,8 +133,8 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
     if current_time != -1:
         # form past windows
         check_time = time.time()
-        while current_time + WINDOW_DURATION + ALLOWED_LATENESS <= check_time:
-            current_time += WINDOW_DURATION
+        while current_time + SLIDE_INTERVAL + ALLOWED_LATENESS <= check_time:
+            current_time += SLIDE_INTERVAL
             await window_manager.advance_watermark(current_time)
     else:
         current_time = int(time.time())
@@ -143,11 +145,11 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
 
     while True:
         # make windows
-        current_time += WINDOW_DURATION
+        current_time += SLIDE_INTERVAL
         start = time.time()
         await window_manager.advance_watermark(current_time)
         end = time.time()
-        await asyncio.sleep(max(0, WINDOW_DURATION - (end - start)))  # already spent some time
+        await asyncio.sleep(max(0, SLIDE_INTERVAL - (end - start)))  # already spent some time
 
 
 async def main():
@@ -159,11 +161,12 @@ async def main():
 
         # Initialize time window manager
         window_manager = TimeWindowManager(
-            window_size = WINDOW_DURATION,
+            window_size=WINDOW_DURATION,
+            slide_interval=SLIDE_INTERVAL,
             on_window_complete=on_window_complete,
             processing_profiles=[LatencyProfile],  # Pass class, not instance
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
-            storage_struct = STORAGE
+            storage_struct=STORAGE
         )
 
         watermark_task_handle = asyncio.create_task(watermark_task(window_manager))
