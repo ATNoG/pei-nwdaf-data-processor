@@ -155,6 +155,7 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
 async def main():
     global kafka_bridge
     shutdown_event = asyncio.Event()
+    watermark_task_handle = None
 
     try:
         kafka_bridge = PyKafBridge("", hostname=KAFKA_HOST, port=KAFKA_PORT)

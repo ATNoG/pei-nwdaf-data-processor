@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from collections import defaultdict
+from datetime import datetime
 from typing import Callable
 from src.profiles.processing_profile import ProcessingProfile
 from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy, KNNStrategy
@@ -161,17 +162,23 @@ class TimeWindowManager:
             # API error — skip this cell this tick, but preserve existing buffer
             return
 
-        # Step 2: Append new data to the window buffer
+        # Step 2: Normalize ISO timestamp strings to integer Unix timestamps
+        for record in new_data:
+            ts = record.get("timestamp")
+            if isinstance(ts, str):
+                record["timestamp"] = int(datetime.fromisoformat(ts).timestamp())
+
+        # Step 3: Append new data to the window buffer
         buf = self._get_or_create_buffer(cell_index)
         buf.append_slice(new_data)
 
-        # Step 3: Evict data older than window_start
+        # Step 4: Evict data older than window_start
         buf.evict_before(window_start)
 
-        # Step 4: Get the full buffered window
+        # Step 5: Get the full buffered window
         window_data = buf.get_all()
 
-        # Step 5: Process through profiles
+        # Step 6: Process through profiles
         is_empty: bool = len(window_data) == 0
         for profile in self.processing_profiles:
 
