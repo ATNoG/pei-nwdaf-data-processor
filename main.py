@@ -4,7 +4,7 @@ import asyncio
 import logging
 from utils.kmw import PyKafBridge
 from src.time_window_manager import TimeWindowManager
-from src.profiles.latency_profile import LatencyProfile
+from src.profiles.metric_profile import MetricProfile
 from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy, ForwardFillStrategy, KNNStrategy
 import time
 
@@ -165,7 +165,7 @@ async def main():
             window_size=WINDOW_DURATION,
             slide_interval=SLIDE_INTERVAL,
             on_window_complete=on_window_complete,
-            processing_profiles=[LatencyProfile],  # Pass class, not instance
+            processing_profiles=[MetricProfile],
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
             storage_struct=STORAGE
         )

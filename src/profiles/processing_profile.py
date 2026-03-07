@@ -6,8 +6,8 @@ from src.empty_window_strategy import EmptyWindowStrategy
 class ProcessingProfile(ABC):
     @classmethod
     @abstractmethod
-    def process(cls, data: list[dict]) -> dict | None:
-        """Process a window of measurements and return aggregated data"""
+    def process(cls, data: list[dict]) -> list[dict]:
+        """Process a window of measurements and return aggregated data per group."""
         raise NotImplementedError
 
     @classmethod
