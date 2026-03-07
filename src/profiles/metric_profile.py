@@ -14,7 +14,7 @@ _METADATA_FIELDS = ("network", "primary_bandwidth", "ul_bandwidth", "physical_ce
 
 class MetricProfile(ProcessingProfile):
     TIME_FIELD = "timestamp"
-    PRIORITY = [("cell_index", "ip_src"), ("cell_index",)]
+    IP_FIELD = "ip_src"
 
     @classmethod
     @override
@@ -22,31 +22,34 @@ class MetricProfile(ProcessingProfile):
         if not data:
             return []
 
-        used_key_fields, groups = cls._group_by_priority(data)
         results = []
-        for group_data in groups.values():
-            result = cls._aggregate_group(used_key_fields, group_data)
+
+        # Always aggregate by cell_index (all records)
+        cell_groups: dict[Any, list[dict]] = defaultdict(list)
+        for record in data:
+            cell = record.get("cell_index")
+            if cell is not None:
+                cell_groups[cell].append(record)
+
+        for cell, group_data in cell_groups.items():
+            result = cls._aggregate_group(("cell_index",), group_data)
             if result is not None:
                 results.append(result)
-        return results
 
-    @classmethod
-    def _group_by_priority(cls, data: list[dict]) -> tuple[tuple[str, ...], dict[tuple, list[dict]]]:
-        """Group records by the best available key from PRIORITY.
-        Returns the key fields used and the grouped data."""
-        for key_fields in cls.PRIORITY:
-            groups: dict[tuple, list[dict]] = defaultdict(list)
-            ungroupable = False
-            for record in data:
-                key_values = tuple(record.get(f) for f in key_fields)
-                if any(v is None for v in key_values):
-                    ungroupable = True
-                    break
-                groups[key_values].append(record)
-            if not ungroupable:
-                return key_fields, dict(groups)
-        # Fallback: cannot group at all
-        return (), {}
+        # Additionally aggregate by (cell_index, ip_src) for records that have ip_src
+        ip_groups: dict[tuple, list[dict]] = defaultdict(list)
+        for record in data:
+            cell = record.get("cell_index")
+            ip = record.get(cls.IP_FIELD)
+            if cell is not None and ip is not None:
+                ip_groups[(cell, ip)].append(record)
+
+        for group_data in ip_groups.values():
+            result = cls._aggregate_group(("cell_index", cls.IP_FIELD), group_data)
+            if result is not None:
+                results.append(result)
+
+        return results
 
     @classmethod
     def _aggregate_group(cls, key_fields: tuple[str, ...], data: list[dict]) -> dict | None:

@@ -78,9 +78,16 @@ def test_multi_cell_returns_separate_groups(multi_cell_data):
 
 def test_groups_by_cell_and_ip_src(data_with_ip_src):
     results = MetricProfile.process(data_with_ip_src)
-    assert len(results) == 2
+    # 1 cell-level + 2 per-ip = 3 results
+    assert len(results) == 3
 
-    by_ip = {r["ip_src"]: r for r in results}
+    cell_results = [r for r in results if "ip_src" not in r]
+    ip_results = [r for r in results if "ip_src" in r]
+
+    assert len(cell_results) == 1
+    assert cell_results[0]["sample_count"] == 3
+
+    by_ip = {r["ip_src"]: r for r in ip_results}
     assert "10.0.0.1" in by_ip
     assert "10.0.0.2" in by_ip
 
@@ -90,12 +97,21 @@ def test_groups_by_cell_and_ip_src(data_with_ip_src):
     assert by_ip["10.0.0.2"]["mean_latency"]["mean"] == 30.0
 
 
-def test_fallback_to_cell_when_ip_src_missing(data_mixed_ip_src):
+def test_mixed_ip_src_emits_both_levels(data_mixed_ip_src):
+    """Some records have ip_src, some don't. Should get cell-level + per-ip for those that have it."""
     results = MetricProfile.process(data_mixed_ip_src)
-    assert len(results) == 1
-    assert results[0]["cell_index"] == 1
-    assert "ip_src" not in results[0]
-    assert results[0]["sample_count"] == 2
+    # 1 cell-level (all 2 records) + 1 per-ip (only the record with ip_src)
+    assert len(results) == 2
+
+    cell_results = [r for r in results if "ip_src" not in r]
+    ip_results = [r for r in results if "ip_src" in r]
+
+    assert len(cell_results) == 1
+    assert cell_results[0]["sample_count"] == 2
+
+    assert len(ip_results) == 1
+    assert ip_results[0]["ip_src"] == "10.0.0.1"
+    assert ip_results[0]["sample_count"] == 1
 
 
 def test_missing_cell_index_returns_empty():
