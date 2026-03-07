@@ -21,19 +21,19 @@ def multi_cell_data():
 
 
 @pytest.fixture
-def data_with_src_ip():
+def data_with_ip_src():
     return [
-        {"cell_index": 1, "src_ip": "10.0.0.1", "rsrp": -80, "mean_latency": 10},
-        {"cell_index": 1, "src_ip": "10.0.0.1", "rsrp": -82, "mean_latency": 12},
-        {"cell_index": 1, "src_ip": "10.0.0.2", "rsrp": -90, "mean_latency": 30},
+        {"cell_index": 1, "ip_src": "10.0.0.1", "rsrp": -80, "mean_latency": 10},
+        {"cell_index": 1, "ip_src": "10.0.0.1", "rsrp": -82, "mean_latency": 12},
+        {"cell_index": 1, "ip_src": "10.0.0.2", "rsrp": -90, "mean_latency": 30},
     ]
 
 
 @pytest.fixture
-def data_mixed_src_ip():
-    """Some records have src_ip, some don't — should fall back to cell_index grouping."""
+def data_mixed_ip_src():
+    """Some records have ip_src, some don't — should fall back to cell_index grouping."""
     return [
-        {"cell_index": 1, "src_ip": "10.0.0.1", "rsrp": -80},
+        {"cell_index": 1, "ip_src": "10.0.0.1", "rsrp": -80},
         {"cell_index": 1, "rsrp": -85},
     ]
 
@@ -76,11 +76,11 @@ def test_multi_cell_returns_separate_groups(multi_cell_data):
     assert cell_ids == {123, 456}
 
 
-def test_groups_by_cell_and_src_ip(data_with_src_ip):
-    results = MetricProfile.process(data_with_src_ip)
+def test_groups_by_cell_and_ip_src(data_with_ip_src):
+    results = MetricProfile.process(data_with_ip_src)
     assert len(results) == 2
 
-    by_ip = {r["src_ip"]: r for r in results}
+    by_ip = {r["ip_src"]: r for r in results}
     assert "10.0.0.1" in by_ip
     assert "10.0.0.2" in by_ip
 
@@ -90,11 +90,11 @@ def test_groups_by_cell_and_src_ip(data_with_src_ip):
     assert by_ip["10.0.0.2"]["mean_latency"]["mean"] == 30.0
 
 
-def test_fallback_to_cell_when_src_ip_missing(data_mixed_src_ip):
-    results = MetricProfile.process(data_mixed_src_ip)
+def test_fallback_to_cell_when_ip_src_missing(data_mixed_ip_src):
+    results = MetricProfile.process(data_mixed_ip_src)
     assert len(results) == 1
     assert results[0]["cell_index"] == 1
-    assert "src_ip" not in results[0]
+    assert "ip_src" not in results[0]
     assert results[0]["sample_count"] == 2
 
 

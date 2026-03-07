@@ -6,7 +6,7 @@ from src.profiles.processing_profile import ProcessingProfile
 
 
 # Fields that are never aggregated as numeric metrics.
-_NON_METRIC_FIELDS = {"timestamp", "cell_index", "src_ip"}
+_NON_METRIC_FIELDS = {"timestamp", "cell_index", "ip_src"}
 
 # Metadata fields carried through as-is (first value in group wins).
 _METADATA_FIELDS = ("network", "primary_bandwidth", "ul_bandwidth", "physical_cellid", "server_ip")
@@ -14,7 +14,7 @@ _METADATA_FIELDS = ("network", "primary_bandwidth", "ul_bandwidth", "physical_ce
 
 class MetricProfile(ProcessingProfile):
     TIME_FIELD = "timestamp"
-    PRIORITY = [("cell_index", "src_ip"), ("cell_index",)]
+    PRIORITY = [("cell_index", "ip_src"), ("cell_index",)]
 
     @classmethod
     @override
