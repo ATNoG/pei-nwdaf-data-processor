@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 from src.time_window_manager import TimeWindowManager
-from src.profiles.latency_profile import LatencyProfile
+from src.profiles.metric_profile import MetricProfile
 from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy, ForwardFillStrategy
 import httpx
 
@@ -68,7 +68,7 @@ async def test_basic_window_processing(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -126,7 +126,7 @@ async def test_multiple_cells_with_data(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -189,7 +189,7 @@ async def test_batched_data_fetching(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -233,7 +233,7 @@ async def test_empty_window_with_skip_strategy(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -264,7 +264,7 @@ async def test_empty_window_with_zerofill_strategy(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ZeroFillStrategy()
     )
 
@@ -277,11 +277,8 @@ async def test_empty_window_with_zerofill_strategy(mock_get):
     assert results[0]["sample_count"] == 0
     assert results[0]["is_empty_window"] is True
 
-    # Check all fields are zero-filled
-    for field in LatencyProfile.FIELDS:
-        assert field in results[0]
-        assert results[0][field]["samples"] == 0
-        assert results[0][field]["min"] is None
+    # No prior window means no fields to zero-fill (fields are dynamic)
+    # The result should still have the empty window markers
 
 
 @pytest.mark.asyncio
@@ -329,7 +326,7 @@ async def test_empty_window_with_forwardfill_strategy(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ForwardFillStrategy()
     )
 
@@ -394,7 +391,7 @@ async def test_consecutive_empty_windows_with_forwardfill(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ForwardFillStrategy()
     )
 
@@ -435,7 +432,7 @@ async def test_storage_api_connection_error(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -466,7 +463,7 @@ async def test_storage_api_timeout(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -498,7 +495,7 @@ async def test_malformed_api_response(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -525,7 +522,7 @@ async def test_no_cells_registered(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -552,7 +549,7 @@ async def test_cells_endpoint_returns_non_list(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -583,7 +580,7 @@ async def test_watermark_monotonicity(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -605,7 +602,7 @@ async def test_set_initial_watermark_only_once():
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: None,
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -639,7 +636,7 @@ async def test_window_time_parameters_correct(mock_get):
         window_size=60,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -706,7 +703,7 @@ async def test_realistic_scenario_mixed_cells(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ZeroFillStrategy()
     )
 
@@ -756,7 +753,7 @@ async def test_historical_processing_scenario(mock_get):
         window_size=60,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -809,7 +806,7 @@ async def test_parallel_cell_processing(mock_get):
         window_size=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -865,7 +862,7 @@ async def test_sliding_window_basic(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=collect,
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -926,7 +923,7 @@ async def test_sliding_window_eviction(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=collect,
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -995,7 +992,7 @@ async def test_sliding_window_overlapping_sample_counts(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=collect,
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -1038,7 +1035,7 @@ async def test_slide_interval_equals_window_size(mock_get):
         slide_interval=10,  # explicitly set equal to window_size
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -1061,7 +1058,7 @@ async def test_slide_interval_validation():
             slide_interval=0,
             storage_struct=MockStorage,
             on_window_complete=lambda data: None,
-            processing_profiles=[LatencyProfile()],
+            processing_profiles=[MetricProfile()],
             empty_window_strategy=SkipStrategy()
         )
 
@@ -1071,7 +1068,7 @@ async def test_slide_interval_validation():
             slide_interval=-5,
             storage_struct=MockStorage,
             on_window_complete=lambda data: None,
-            processing_profiles=[LatencyProfile()],
+            processing_profiles=[MetricProfile()],
             empty_window_strategy=SkipStrategy()
         )
 
@@ -1081,7 +1078,7 @@ async def test_slide_interval_validation():
             slide_interval=20,
             storage_struct=MockStorage,
             on_window_complete=lambda data: None,
-            processing_profiles=[LatencyProfile()],
+            processing_profiles=[MetricProfile()],
             empty_window_strategy=SkipStrategy()
         )
 
@@ -1111,7 +1108,7 @@ async def test_sliding_window_empty_buffer_uses_strategy(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ZeroFillStrategy()
     )
 
@@ -1160,7 +1157,7 @@ async def test_sliding_window_api_error_preserves_buffer(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -1212,7 +1209,7 @@ async def test_sliding_window_cell_disappears(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -1260,7 +1257,7 @@ async def test_sliding_window_new_cell_appears(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=SkipStrategy()
     )
 
@@ -1303,7 +1300,7 @@ async def test_sliding_window_warm_up_stamps(mock_get):
         slide_interval=10,
         storage_struct=MockStorage,
         on_window_complete=lambda data: results.append(data),
-        processing_profiles=[LatencyProfile()],
+        processing_profiles=[MetricProfile()],
         empty_window_strategy=ZeroFillStrategy()
     )
 
