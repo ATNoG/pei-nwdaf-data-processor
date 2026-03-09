@@ -185,31 +185,32 @@ class TimeWindowManager:
             if is_empty:
                 # use profile empty window handling
                 last_processed = self._last_processed.get(cell_index)
-                data = profile.handle_empty_window(
+                result = profile.handle_empty_window(
                     cell_id=str(cell_index),
                     window_start=window_start,
                     window_end=window_end,
                     strategy=self.empty_window_strategy,
                     last_processed=last_processed)
+                results = [result] if result is not None else []
             else:
-                data = profile.process(window_data)
+                results = profile.process(window_data)
 
-            if data is None:
-                continue
+            for data in results:
+                data["window_start"] = window_start
+                data["window_duration_seconds"] = self.window_size
+                data["window_end"] = window_end
 
-            data["window_start"] = window_start
-            data["window_duration_seconds"] = self.window_size
-            data["window_end"] = window_end
+                # TODO: _last_processed is keyed by cell_index only. When process()
+                # returns multiple groups per cell (e.g. per src_ip), only the last
+                # group's result is stored. May need keying by full group key for
+                # per-group empty window handling in the future.
+                self._last_processed[cell_index] = data.copy()
 
-            # Store as last processed for this cell
-            self._last_processed[cell_index] = data.copy()
+                # Add to KNN history buffer if not an empty window
+                if not is_empty and isinstance(self.empty_window_strategy, KNNStrategy):
+                    self.empty_window_strategy.add_to_history(str(cell_index), data)
 
-            # Add to KNN history buffer if not an empty window
-            # This happens AFTER processing so KNN has access to aggregated stats
-            if not is_empty and isinstance(self.empty_window_strategy, KNNStrategy):
-                self.empty_window_strategy.add_to_history(str(cell_index), data)
-
-            self.on_window_complete(data)
+                self.on_window_complete(data)
 
     async def _fetch_cells(self) -> list[int]:
         """Fetch cells from api"""

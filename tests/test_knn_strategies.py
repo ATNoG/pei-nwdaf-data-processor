@@ -19,7 +19,7 @@ from src.empty_window_strategy import (
     ForwardFillStrategy,
 )
 from src.time_window_manager import TimeWindowManager
-from src.profiles.latency_profile import LatencyProfile
+from src.profiles.metric_profile import MetricProfile
 
 
 class MockStorage:
@@ -472,7 +472,7 @@ class TestKNNIntegration:
             window_size=60,
             storage_struct=MockStorage,
             on_window_complete=lambda data: results.append(data),
-            processing_profiles=[LatencyProfile()],
+            processing_profiles=[MetricProfile()],
             empty_window_strategy=KNNStrategy(k=3, max_history_hours=168, history_buffer=history_buffer),
         )
 
