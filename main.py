@@ -107,32 +107,40 @@ def get_discovered_fields() -> list[str]:
     return list(_discovered_fields)
 
 
-# Create async client first
-async_policy_client = PolicyClient(
+# Create policy client
+_async_client = PolicyClient(
     service_url=POLICY_SERVICE_URL,
     component_id=POLICY_COMPONENT_ID,
     fields=get_discovered_fields,
     enable_policy=POLICY_ENABLED,
     fail_open=POLICY_FAILOPEN
 )
+policy_client = SyncPolicyClient(_async_client)
 
-# Wrap in sync client for use in non-async contexts
-policy_client = SyncPolicyClient(async_policy_client)
 
 def register_with_policy():
     """Register with policy service using sync client."""
+    logger.info(f"Policy enabled: {POLICY_ENABLED}, attempting registration...")
     if POLICY_ENABLED:
         try:
+            fields = get_discovered_fields()
+            logger.info(f"Registering with {len(fields)} discovered fields")
             result = policy_client.register_component(
-                component_type="data-processor",
+                component_type="processor",
                 role=os.getenv("POLICY_ROLENAME", "Processor"),
-                data_columns=get_discovered_fields(),
+                data_columns=fields,
                 auto_create_attributes=True,
             )
+            if result:
+                logger.info("Successfully registered with Policy Service")
+            else:
+                logger.warning("Policy registration returned False")
             return result
         except Exception as e:
             logger.warning(f"Failed to register with Policy Service: {e}")
             return False
+    else:
+        logger.info("Policy enforcement disabled, skipping registration")
     return True
 
 
@@ -169,7 +177,7 @@ def on_window_complete(data: dict):
         logger.info(f"New fields discovered! Total: {len(_discovered_fields)}. Re-registering...")
         try:
             policy_client.register_component(
-                component_type="data-processor",
+                component_type="processor",
                 role=os.getenv("POLICY_ROLENAME", "Processor"),
                 data_columns=list(_discovered_fields),
                 auto_create_attributes=True
@@ -179,7 +187,6 @@ def on_window_complete(data: dict):
             logger.warning(f"Failed to update component registration: {e}")
 
     if kafka_bridge:
-
         result = policy_client.process_data(
             source_id=POLICY_COMPONENT_ID,
             sink_id="kafka",
@@ -241,12 +248,13 @@ async def main():
             on_window_complete=on_window_complete,
             processing_profiles=[MetricProfile],
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
-            storage_struct=STORAGE
+            storage_struct=STORAGE,
+            component_id=POLICY_COMPONENT_ID
         )
 
         watermark_task_handle = asyncio.create_task(watermark_task(window_manager))
 
-        # Register with policy service (sync call)
+        # Register with policy service
         register_with_policy()
 
         await shutdown_event.wait()
