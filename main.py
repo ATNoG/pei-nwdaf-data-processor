@@ -113,7 +113,8 @@ _async_client = PolicyClient(
     component_id=POLICY_COMPONENT_ID,
     fields=get_discovered_fields,
     enable_policy=POLICY_ENABLED,
-    fail_open=POLICY_FAILOPEN
+    fail_open=POLICY_FAILOPEN,
+    heartbeat_interval=30,
 )
 policy_client = SyncPolicyClient(_async_client)
 
