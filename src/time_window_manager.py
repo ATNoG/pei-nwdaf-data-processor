@@ -28,6 +28,7 @@ class TimeWindowManager:
         processing_profiles: list[ProcessingProfile] | None = None,
         empty_window_strategy: EmptyWindowStrategy | None = None,
         slide_interval: int | None = None,
+        component_id: str | None = None,
     ):
         self.window_size = window_size
         self.slide_interval = slide_interval if slide_interval is not None else window_size
@@ -43,6 +44,7 @@ class TimeWindowManager:
         self.empty_window_strategy = empty_window_strategy or SkipStrategy()
 
         self.storage_struct = storage_struct
+        self.component_id = component_id  # Component ID for policy enforcement
 
         self.watermark: int = 0
         self._last_processed: dict[int, dict] = {}  # Track last processed window per cell
@@ -129,8 +131,12 @@ class TimeWindowManager:
                     "start_time": start_time,
                     "end_time": end_time
                 }
+                # Prepare headers with component ID for policy enforcement
+                headers = {}
+                if self.component_id:
+                    headers["X-Component-ID"] = self.component_id
                 try:
-                    response = await client.get(f"{URL}", params=params, timeout=30.0)
+                    response = await client.get(f"{URL}", params=params, headers=headers, timeout=30.0)
                     response.raise_for_status()
 
                     result = response.json()
@@ -210,6 +216,7 @@ class TimeWindowManager:
                 if not is_empty and isinstance(self.empty_window_strategy, KNNStrategy):
                     self.empty_window_strategy.add_to_history(str(cell_index), data)
 
+                # Call callback
                 self.on_window_complete(data)
 
     async def _fetch_cells(self) -> list[int]:
