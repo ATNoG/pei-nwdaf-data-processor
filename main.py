@@ -8,6 +8,8 @@ from src.profiles.metric_profile import MetricProfile
 from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy, ForwardFillStrategy, KNNStrategy
 import time
 
+from policy_client import PolicyClient, SyncPolicyClient
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +35,12 @@ EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "ZERO_FILL")
 # KNN-specific configuration
 KNN_K_NEIGHBORS = int(os.getenv("KNN_K_NEIGHBORS", "5"))
 KNN_MAX_HISTORY_HOURS = int(os.getenv("KNN_MAX_HISTORY_HOURS", "168"))  # 1 week default
+
+POLICY_SERVICE_URL = os.getenv("POLICY_SERVICE_URL", "http://policy-service:8788")
+POLICY_COMPONENT_ID = os.getenv("POLICY_COMPONENT_ID", "data-processor")
+POLICY_ENABLED = os.getenv("POLICY_ENABLED", "false").lower() == "true"
+POLICY_FAILOPEN = os.getenv("POLICY_FAILOPEN", "true").lower() == "true"
+
 
 # Data storage api
 DATA_STORAGE_API_URL = os.getenv("DATA_STORAGE_API_URL", None)
@@ -92,6 +100,50 @@ logger.info("----------------------------------------------")
 
 kafka_bridge: PyKafBridge
 
+_discovered_fields: set[str] = set()
+
+def get_discovered_fields() -> list[str]:
+    """Get all field names discovered from incoming data."""
+    return list(_discovered_fields)
+
+
+# Create policy client
+_async_client = PolicyClient(
+    service_url=POLICY_SERVICE_URL,
+    component_id=POLICY_COMPONENT_ID,
+    fields=get_discovered_fields,
+    enable_policy=POLICY_ENABLED,
+    fail_open=POLICY_FAILOPEN,
+    heartbeat_interval=30,
+)
+policy_client = SyncPolicyClient(_async_client)
+
+
+def register_with_policy():
+    """Register with policy service using sync client."""
+    logger.info(f"Policy enabled: {POLICY_ENABLED}, attempting registration...")
+    if POLICY_ENABLED:
+        try:
+            fields = get_discovered_fields()
+            logger.info(f"Registering with {len(fields)} discovered fields")
+            result = policy_client.register_component(
+                component_type="processor",
+                role=os.getenv("POLICY_ROLENAME", "Processor"),
+                data_columns=fields,
+                auto_create_attributes=True,
+            )
+            if result:
+                logger.info("Successfully registered with Policy Service")
+            else:
+                logger.warning("Policy registration returned False")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to register with Policy Service: {e}")
+            return False
+    else:
+        logger.info("Policy enforcement disabled, skipping registration")
+    return True
+
 
 def on_window_complete(data: dict):
     """Callback triggered when a window is completed for a cell"""
@@ -116,9 +168,39 @@ def on_window_complete(data: dict):
         logger.info(f"● Processed window {data['window_start']}-{data['window_end']} "
                    f"for cell {cell_id} ({data.get('sample_count', 0)} samples)")
 
-    if kafka_bridge:
+    previous_field_count = len(_discovered_fields)
+    _discovered_fields.update(data.keys())
+
+    if previous_field_count == 0:
+        logger.info(f"First data received! Discovered {len(_discovered_fields)} fields: {list(_discovered_fields)}")
+
+    if len(_discovered_fields) > previous_field_count:
+        logger.info(f"New fields discovered! Total: {len(_discovered_fields)}. Re-registering...")
         try:
-            message = json.dumps(data, default=str)
+            policy_client.register_component(
+                component_type="processor",
+                role=os.getenv("POLICY_ROLENAME", "Processor"),
+                data_columns=list(_discovered_fields),
+                auto_create_attributes=True
+            )
+            logger.info(f"Updated component registration with {len(_discovered_fields)} fields")
+        except Exception as e:
+            logger.warning(f"Failed to update component registration: {e}")
+
+    if kafka_bridge:
+        result = policy_client.process_data(
+            source_id=POLICY_COMPONENT_ID,
+            sink_id="kafka",
+            data=data,
+            action="write"
+        )
+
+        if not result.allowed:
+            logger.warning(f"Data filtered by policy: {result.reason}")
+            return
+
+        try:
+            message = json.dumps(result.data, default=str)
             kafka_bridge.produce(OUTPUT_TOPIC, message)
             logger.debug(f"Produced processed data to topic '{OUTPUT_TOPIC}'")
         except Exception as e:
@@ -167,10 +249,14 @@ async def main():
             on_window_complete=on_window_complete,
             processing_profiles=[MetricProfile],
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
-            storage_struct=STORAGE
+            storage_struct=STORAGE,
+            component_id=POLICY_COMPONENT_ID
         )
 
         watermark_task_handle = asyncio.create_task(watermark_task(window_manager))
+
+        # Register with policy service
+        register_with_policy()
 
         await shutdown_event.wait()
 
