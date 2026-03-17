@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - KAFKA_HOST=kafka
+      - KAFKA_HOST=${KAFKA_HOST:-kafka}
       - KAFKA_PORT=${KAFKA_PORT:-9092}
       - WINDOW_DURATION=60
       - SLIDE_INTERVAL=${SLIDE_INTERVAL_60:-60}
@@ -18,7 +18,7 @@ services:
       - POLICY_COMPONENT_ID=data-processor-60s
       - POLICY_ENABLED=${POLICY_ENABLED:-true}
       - POLICY_FAILOPEN=${POLICY_FAILOPEN:-true}
-      - POLICY_ROLENAME=${POLICY_ROLENAME:-Processor}
+      - POLICY_ROLENAME=processor
     networks:
       - nwdaf-network
 
@@ -28,7 +28,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - KAFKA_HOST=kafka
+      - KAFKA_HOST=${KAFKA_HOST:-kafka}
       - KAFKA_PORT=${KAFKA_PORT:-9092}
       - WINDOW_DURATION=300
       - SLIDE_INTERVAL=${SLIDE_INTERVAL_300:-300}
@@ -41,7 +41,7 @@ services:
       - POLICY_COMPONENT_ID=data-processor-300s
       - POLICY_ENABLED=${POLICY_ENABLED:-true}
       - POLICY_FAILOPEN=${POLICY_FAILOPEN:-true}
-      - POLICY_ROLENAME=${POLICY_ROLENAME:-Processor}
+      - POLICY_ROLENAME=processor
     networks:
       - nwdaf-network
 
