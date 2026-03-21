@@ -1,85 +1,88 @@
-# pei-nwdaf-processor
+# pei-nwdaf-data-processor
 
-> Project for PEI evaluation 25/26
-
-## Overview
-
-Data processing service that aggregates and processes network telemetry measurements in time-aligned windows. Consumes raw network data from Kafka, groups measurements by cell and time window, applies statistical processing, and publishes aggregated results back to Kafka.
+Data processing service for 5G network telemetry - aggregates raw measurements into time-aligned sliding windows and publishes them to Kafka.
 
 ## Technologies
 
-- **Python** 3.13 with async/await patterns
-- **Apache Kafka** (confluent_kafka client) - Message streaming
-- **FastAPI/Uvicorn** ecosystem
-- **httpx** - Async HTTP requests
-- **Docker** - Containerization
-- **pytest** with asyncio support
+- **Python** 3.13
+- **Apache Kafka** (`confluent_kafka`) - message streaming
+- **httpx** - async HTTP calls to the Storage API
 
-## Key Features
+## How It Works
 
-- **Time-windowed processing**: Event-time aligned windows (configurable: 60s, 300s)
-- **Watermark-driven lifecycle**: Manages window completion with configurable allowed lateness
-- **Processing profiles**: Extensible ProfileBase classes
-  - **LatencyProfile**: Aggregates RSRP, SINR, RSRQ, mean_latency, CQI with statistics (min, max, mean, std dev)
-- **Empty window strategies**: Pluggable StrategyBase patterns
-  - **SkipStrategy**: Ignore empty windows
-  - **ZeroFillStrategy**: Generate zero/null-filled records
-  - **ForwardFillStrategy**: Replicate last known values
-- **Parallel processing**: Async cell data fetching and windowing
-- **Integration**: Storage API for cell metadata, Kafka for input/output
+1. A watermark task ticks every `SLIDE_INTERVAL` seconds, advancing event time
+2. On each tick, `TimeWindowManager` fetches the list of known cells from the Storage API, then fetches the new data slice for each cell in parallel
+3. Each cell's data is appended to an in-memory `CellWindowBuffer`; records older than `window_start` are evicted
+4. `MetricProfile` aggregates the buffered window - once grouped by `cell_index`, once grouped by `(cell_index, ip_src)` - computing `min`, `max`, `mean`, `std`, and `samples` for every numeric field
+5. Empty windows (no measurements in the buffer) are passed to the configured `EmptyWindowStrategy`
+6. Completed window records are published to `network.data.processed` via Kafka, optionally filtered by the Policy Service
 
-## How to Test
+Two processor instances run in parallel via `docker-compose`: `data-processor-60s` (60 s window, 20 s lateness) and `data-processor-300s` (300 s window, 30 s lateness).
 
-### 1. Launch Kafka via Docker
+## Integrations
+
+| Service | Role |
+|---|---|
+| **Storage API** | Source of raw measurements and cell list |
+| **Kafka** | Input topic `network.data.ingested` (metadata only); output topic `network.data.processed` |
+| **Policy Service** | Optional per-record filtering before Kafka publish |
+
+### Storage API contract
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/cell` | Returns `[cell_index, ...]` |
+| `GET /api/v1/raw?cell_index=&start_time=&end_time=&batch_number=` | Returns `{ "data": [...], "has_next": bool }` |
+
+## Empty Window Strategies
+
+| Strategy | Behaviour |
+|---|---|
+| `SKIP` | Emit nothing |
+| `ZERO_FILL` | Emit a record with all metric stats set to `null` |
+| `FORWARD_FILL` | Copy the last non-empty window's values |
+| `KNN` | Impute from temporally similar historical windows (hour + weekday/weekend distance); falls back to `FORWARD_FILL` then `ZERO_FILL` |
+
+## Output Record Schema
+
+```json
+{
+  "cell_index": 1,
+  "type": "metric",
+  "sample_count": 42,
+  "window_start": 1700000000,
+  "window_end": 1700000060,
+  "window_duration_seconds": 60,
+  "network": "...",
+  "physical_cellid": "...",
+  "<metric>": { "min": 0.0, "max": 1.0, "mean": 0.5, "std": 0.2, "samples": 42 }
+}
+```
+
+Records covering a `(cell_index, ip_src)` grouping also include `ip_src`.
+Empty-window records carry `"is_empty_window": true` and a fill-method flag (`"forward_filled"`, `"knn_filled"`, or `"knn_fallback"`).
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATA_STORAGE_API_URL` | *(required)* | Base URL of the Storage API |
+| `KAFKA_HOST` | `kafka` | Kafka broker hostname |
+| `KAFKA_PORT` | `9092` | Kafka broker port |
+| `WINDOW_DURATION` | `60` | Window size in seconds |
+| `SLIDE_INTERVAL` | `WINDOW_DURATION` | How often to advance the watermark (seconds) |
+| `ALLOWED_LATENESS` | `10` | Grace period before the first watermark tick (seconds) |
+| `EMPTY_WINDOW_STRATEGY` | `ZERO_FILL` | `SKIP`, `ZERO_FILL`, `FORWARD_FILL`, or `KNN` |
+| `KNN_K_NEIGHBORS` | `5` | Neighbours to use for KNN imputation |
+| `KNN_MAX_HISTORY_HOURS` | `168` | How far back KNN searches (default: 1 week) |
+| `START_TIME` | *(unset)* | Unix timestamp - if set, replays history from that point before going live |
+| `POLICY_SERVICE_URL` | `http://policy-service:8788` | Policy enforcement service URL |
+| `POLICY_ENABLED` | `false` | Enable policy-based data filtering |
+| `POLICY_FAILOPEN` | `true` | Allow data through if the Policy Service is unreachable |
+
+## Running
 
 ```bash
-docker run -p 9092:9092 apache/kafka:4.1.1
-```
-
-### 2. Create Required Topics
-
-```bash
-utils/topic.sh [container] "network.data.ingested" -c
-utils/topic.sh [container] "network.data.processed" -c
-```
-
-### 3. Start the FastAPI Server (Ingestion Component)
-
-```bash
-uvicorn receiver:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 4. Run the Producer Component
-
-```bash
-python3 producer/main.py -a "http://localhost:8000/receive" -f dataset/hbahn/latency_data.csv
-```
-
-## Docker Deployment
-
-```bash
-docker-compose up
-```
-
-Runs two processor instances for different time scales (60s and 300s windows).
-
-## Architecture
-
-- **Modular design**: Extensible ProfileBase and StrategyBase classes
-- **Kafka topics**: Consumes from `network.data.ingested`, produces to `network.data.processed`
-- **Cell-level aggregation**: Validates cell consistency within windows
-- **Batch pagination**: Supports large result sets
-
-## Directory Structure
-
-```
-processor/
-├── main.py                      # Entry point - Kafka consumer/watermark coordination
-├── src/
-│   ├── time_window_manager.py  # Core windowing logic
-│   ├── empty_window_strategy.py # Empty window handling
-│   └── profiles/
-│       ├── processing_profile.py # Abstract profile interface
-│       └── latency_profile.py    # Network latency aggregation
-└── tests/                       # pytest test suite
+cp .env.example .env
+docker-compose up --build
 ```
