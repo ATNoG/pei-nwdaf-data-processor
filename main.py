@@ -174,7 +174,7 @@ def on_window_complete(data: dict):
     if previous_field_count == 0:
         logger.info(f"First data received! Discovered {len(_discovered_fields)} fields: {list(_discovered_fields)}")
 
-    if len(_discovered_fields) > previous_field_count:
+    if POLICY_ENABLED and len(_discovered_fields) > previous_field_count:
         logger.info(f"New fields discovered! Total: {len(_discovered_fields)}. Re-registering...")
         try:
             policy_client.register_component(
@@ -188,9 +188,10 @@ def on_window_complete(data: dict):
             logger.warning(f"Failed to update component registration: {e}")
 
     if kafka_bridge:
+        policy_sink_id = os.getenv("POLICY_SINK_ID", "kafka")
         result = policy_client.process_data(
             source_id=POLICY_COMPONENT_ID,
-            sink_id="kafka",
+            sink_id=policy_sink_id,
             data=data,
             action="write"
         )
