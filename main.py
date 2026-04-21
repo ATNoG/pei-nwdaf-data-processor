@@ -1,56 +1,33 @@
-import json
-import os
 import asyncio
+import json
 import logging
-from utils.kmw import PyKafBridge
-from src.time_window_manager import TimeWindowManager
-from src.profiles.metric_profile import MetricProfile
-from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy, ForwardFillStrategy, KNNStrategy
+import os
 import time
 
-from policy_client import PolicyClient, SyncPolicyClient
+from confluent_kafka import Consumer, KafkaError, Producer
 
-# Configure logging
+from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy
+from src.time_window_manager import TimeWindowManager
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-#logging.getLogger("asyncio").setLevel(logging.WARNING)
-#logging.getLogger("urllib3").setLevel(logging.WARNING)
-#logging.getLogger("requests").setLevel(logging.WARNING)
-
-# Kafka setup
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = os.getenv("KAFKA_PORT", "9092")
+INPUT_TOPIC = "network.data.ingested"
 OUTPUT_TOPIC = "network.data.processed"
 
-# Time window setup, in seconds
 WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "60"))
 SLIDE_INTERVAL = int(os.getenv("SLIDE_INTERVAL", str(WINDOW_DURATION)))
 ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
-EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "ZERO_FILL")
+EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")
+_group_ttl_env = os.getenv("GROUP_TTL_SECONDS", None)
+GROUP_TTL: int | None = int(_group_ttl_env) if _group_ttl_env else None
 
-# KNN-specific configuration
-KNN_K_NEIGHBORS = int(os.getenv("KNN_K_NEIGHBORS", "5"))
-KNN_MAX_HISTORY_HOURS = int(os.getenv("KNN_MAX_HISTORY_HOURS", "168"))  # 1 week default
-
-POLICY_SERVICE_URL = os.getenv("POLICY_SERVICE_URL", "http://policy-service:8788")
-POLICY_COMPONENT_ID = os.getenv("POLICY_COMPONENT_ID", "data-processor")
-POLICY_ENABLED = os.getenv("POLICY_ENABLED", "false").lower() == "true"
-POLICY_FAILOPEN = os.getenv("POLICY_FAILOPEN", "true").lower() == "true"
-
-
-# Data storage api
-DATA_STORAGE_API_URL = os.getenv("DATA_STORAGE_API_URL", None)
-
-if DATA_STORAGE_API_URL is None:
-    logger.error("No data storage api provided")
-    exit(1)
-
-current_time: int
 START_TIME = os.getenv("START_TIME", None)
+current_time: int
 
 if START_TIME is None:
     current_time = -1
@@ -62,23 +39,13 @@ else:
         logger.error(f"Cannot convert {START_TIME} to a valid number")
         exit(1)
 
-
-class STORAGE:
-    url = f"{DATA_STORAGE_API_URL}/api/v1/"
-    class endpoint:
-        cell = "cell"
-        raw = "raw"
-
-
-# Map strategy name to strategy instance
 STRATEGY_MAP = {
     "SKIP": SkipStrategy(),
     "ZERO_FILL": ZeroFillStrategy(),
-    "FORWARD_FILL": ForwardFillStrategy(),
-    "KNN": KNNStrategy(k=KNN_K_NEIGHBORS, max_history_hours=KNN_MAX_HISTORY_HOURS),
 }
-
-EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(EMPTY_WINDOW_STRATEGY_NAME.upper(), ZeroFillStrategy())
+EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(
+    EMPTY_WINDOW_STRATEGY_NAME.upper(), SkipStrategy()
+)
 
 logger.info(f"""
 ----------------------------------------------
@@ -87,133 +54,37 @@ allowed_lateness      : {ALLOWED_LATENESS}
 window_duration       : {WINDOW_DURATION}
 slide_interval        : {SLIDE_INTERVAL}
 empty_window_strategy : {EMPTY_WINDOW_STRATEGY.__class__.__name__}
+----------------------------------------------
 """)
 
-# Log KNN-specific config if using KNN
-if isinstance(EMPTY_WINDOW_STRATEGY, KNNStrategy):
-    logger.info(f"""KNN Configuration:
-k_neighbors           : {KNN_K_NEIGHBORS}
-max_history_hours     : {KNN_MAX_HISTORY_HOURS}
-""")
-
-logger.info("----------------------------------------------")
-
-kafka_bridge: PyKafBridge
-
-_discovered_fields: set[str] = set()
-
-def get_discovered_fields() -> list[str]:
-    """Get all field names discovered from incoming data."""
-    return list(_discovered_fields)
-
-
-# Create policy client
-_async_client = PolicyClient(
-    service_url=POLICY_SERVICE_URL,
-    component_id=POLICY_COMPONENT_ID,
-    fields=get_discovered_fields,
-    enable_policy=POLICY_ENABLED,
-    fail_open=POLICY_FAILOPEN,
-    heartbeat_interval=30,
-)
-policy_client = SyncPolicyClient(_async_client)
-
-
-def register_with_policy():
-    """Register with policy service using sync client."""
-    logger.info(f"Policy enabled: {POLICY_ENABLED}, attempting registration...")
-    if POLICY_ENABLED:
-        try:
-            fields = get_discovered_fields()
-            logger.info(f"Registering with {len(fields)} discovered fields")
-            result = policy_client.register_component(
-                component_type="processor",
-                role=os.getenv("POLICY_ROLENAME", "Processor"),
-                data_columns=fields,
-                auto_create_attributes=True,
-            )
-            if result:
-                logger.info("Successfully registered with Policy Service")
-            else:
-                logger.warning("Policy registration returned False")
-            return result
-        except Exception as e:
-            logger.warning(f"Failed to register with Policy Service: {e}")
-            return False
-    else:
-        logger.info("Policy enforcement disabled, skipping registration")
-    return True
+kafka_producer: Producer | None = None
 
 
 def on_window_complete(data: dict):
-    """Callback triggered when a window is completed for a cell"""
-    # Send to output Kafka topic
-    cell_id = data.get('cell_index', 'unknown')
+    tags = data.get("tags", {})
+    group = "/".join(str(v) for v in tags.values())
+    logger.info(
+        f"● Window {data['window_start']}-{data['window_end']} "
+        f"group={group} samples={data.get('sample_count', 0)} "
+        f"metrics={list(data.get('metrics', {}).keys())}"
+    )
 
-    # Enhanced logging for empty windows
-    if data.get('is_empty_window'):
-        if data.get('knn_filled'):
-            neighbors = data.get('knn_neighbors_used', 0)
-            logger.info(f"✓ KNN filled window {data['window_start']}-{data['window_end']} "
-                       f"for cell {cell_id} using {neighbors} neighbors")
-        elif data.get('knn_fallback'):
-            fallback = data.get('knn_fallback')
-            logger.info(f"→ KNN fallback ({fallback}) for window {data['window_start']}-{data['window_end']} "
-                       f"for cell {cell_id}")
-        elif data.get('forward_filled'):
-            logger.info(f"→ Forward filled window {data['window_start']}-{data['window_end']} for cell {cell_id}")
-        else:
-            logger.info(f"○ Empty window {data['window_start']}-{data['window_end']} for cell {cell_id}")
-    else:
-        logger.info(f"● Processed window {data['window_start']}-{data['window_end']} "
-                   f"for cell {cell_id} ({data.get('sample_count', 0)} samples)")
-
-    previous_field_count = len(_discovered_fields)
-    _discovered_fields.update(data.keys())
-
-    if previous_field_count == 0:
-        logger.info(f"First data received! Discovered {len(_discovered_fields)} fields: {list(_discovered_fields)}")
-
-    if len(_discovered_fields) > previous_field_count:
-        logger.info(f"New fields discovered! Total: {len(_discovered_fields)}. Re-registering...")
+    if kafka_producer:
         try:
-            policy_client.register_component(
-                component_type="processor",
-                role=os.getenv("POLICY_ROLENAME", "Processor"),
-                data_columns=list(_discovered_fields),
-                auto_create_attributes=True
+            kafka_producer.produce(
+                OUTPUT_TOPIC, json.dumps(data, default=str).encode("utf-8")
             )
-            logger.info(f"Updated component registration with {len(_discovered_fields)} fields")
+            kafka_producer.poll(0)
         except Exception as e:
-            logger.warning(f"Failed to update component registration: {e}")
-
-    if kafka_bridge:
-        result = policy_client.process_data(
-            source_id=POLICY_COMPONENT_ID,
-            sink_id="kafka",
-            data=data,
-            action="write"
-        )
-
-        if not result.allowed:
-            logger.warning(f"Data filtered by policy: {result.reason}")
-            return
-
-        try:
-            message = json.dumps(result.data, default=str)
-            kafka_bridge.produce(OUTPUT_TOPIC, message)
-            logger.debug(f"Produced processed data to topic '{OUTPUT_TOPIC}'")
-        except Exception as e:
-            logger.error(f"Failed to produce processed data to topic '{OUTPUT_TOPIC}': {e}")
+            logger.error(f"Failed to produce to '{OUTPUT_TOPIC}': {e}")
     else:
-        logger.warning("Kafka bridge not initialized")
+        logger.warning("Kafka producer not initialized")
 
 
 async def watermark_task(window_manager: TimeWindowManager) -> None:
     global current_time
 
     if current_time != -1:
-        # form past windows
         check_time = time.time()
         while current_time + SLIDE_INTERVAL + ALLOWED_LATENESS <= check_time:
             current_time += SLIDE_INTERVAL
@@ -222,57 +93,87 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
         current_time = int(time.time())
         window_manager.set_initial_watermark(current_time)
 
-    # sleep to match allowed lateness
     await asyncio.sleep(ALLOWED_LATENESS)
 
     while True:
-        # make windows
         current_time += SLIDE_INTERVAL
         start = time.time()
         await window_manager.advance_watermark(current_time)
         end = time.time()
-        await asyncio.sleep(max(0, SLIDE_INTERVAL - (end - start)))  # already spent some time
+        await asyncio.sleep(max(0, SLIDE_INTERVAL - (end - start)))
+
+
+async def consume_messages(window_manager: TimeWindowManager) -> None:
+    loop = asyncio.get_running_loop()
+    consumer = Consumer(
+        {
+            "bootstrap.servers": f"{KAFKA_HOST}:{KAFKA_PORT}",
+            "group.id": "data-processor",
+            "auto.offset.reset": "latest",
+        }
+    )
+    consumer.subscribe([INPUT_TOPIC])
+    logger.info(f"Subscribed to '{INPUT_TOPIC}'")
+
+    try:
+        while True:
+            msg = await loop.run_in_executor(None, consumer.poll, 1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                logger.error(f"Kafka error: {msg.error()}")
+                continue
+            try:
+                payload = json.loads(msg.value().decode("utf-8"))
+                records = payload if isinstance(payload, list) else [payload]
+                for record in records:
+                    window_manager.ingest(record)
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        consumer.close()
 
 
 async def main():
-    global kafka_bridge
-    shutdown_event = asyncio.Event()
-    watermark_task_handle = None
+    global kafka_producer
+    tasks = []
 
     try:
-        kafka_bridge = PyKafBridge("", hostname=KAFKA_HOST, port=KAFKA_PORT)
+        kafka_producer = Producer({"bootstrap.servers": f"{KAFKA_HOST}:{KAFKA_PORT}"})
 
-        # Initialize time window manager
         window_manager = TimeWindowManager(
             window_size=WINDOW_DURATION,
             slide_interval=SLIDE_INTERVAL,
             on_window_complete=on_window_complete,
-            processing_profiles=[MetricProfile],
             empty_window_strategy=EMPTY_WINDOW_STRATEGY,
-            storage_struct=STORAGE,
-            component_id=POLICY_COMPONENT_ID
+            group_ttl=GROUP_TTL,
         )
 
-        watermark_task_handle = asyncio.create_task(watermark_task(window_manager))
+        tasks = [
+            asyncio.create_task(consume_messages(window_manager)),
+            asyncio.create_task(watermark_task(window_manager)),
+        ]
 
-        # Register with policy service
-        register_with_policy()
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for t in done:
+            if t.exception():
+                logger.error(f"Task failed: {t.exception()}")
 
-        await shutdown_event.wait()
-
-    except KeyboardInterrupt:
-        print("Shutdown signal received...")
-        shutdown_event.set()
-
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Shutdown signal received")
     except Exception as e:
-        print(f"Failed to start Kafka bridge consumer: {e}")
+        logger.error(f"Fatal error: {e}")
     finally:
-        if kafka_bridge is not None:
-            await kafka_bridge.close()
-            print("Kafka bridge consumer closed")
-        if watermark_task_handle:
-            watermark_task_handle.cancel()
-            await asyncio.gather(watermark_task_handle, return_exceptions=True)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if kafka_producer is not None:
+            kafka_producer.flush()
 
 
 if __name__ == "__main__":
