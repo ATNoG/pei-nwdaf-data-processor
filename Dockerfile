@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     librdkafka-dev \
     ca-certificates \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 

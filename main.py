@@ -1,13 +1,12 @@
 import asyncio
 import json
-import logging
 import os
+import logging
 import time
 
-from confluent_kafka import Consumer, KafkaError, Producer
-
-from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy
+from confluent_kafka import Consumer, Producer, KafkaError
 from src.time_window_manager import TimeWindowManager
+from src.empty_window_strategy import SkipStrategy, ZeroFillStrategy
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -23,8 +22,8 @@ WINDOW_DURATION = int(os.getenv("WINDOW_DURATION", "60"))
 SLIDE_INTERVAL = int(os.getenv("SLIDE_INTERVAL", str(WINDOW_DURATION)))
 ALLOWED_LATENESS = int(os.getenv("ALLOWED_LATENESS", "10"))
 EMPTY_WINDOW_STRATEGY_NAME = os.getenv("EMPTY_WINDOW_STRATEGY", "SKIP")
-_group_ttl_env = os.getenv("GROUP_TTL_SECONDS", None)
-GROUP_TTL: int | None = int(_group_ttl_env) if _group_ttl_env else None
+_group_ttl_env = os.getenv("GROUP_TTL_SECONDS") or None
+GROUP_TTL: int | None = int(_group_ttl_env) if _group_ttl_env is not None else None
 
 START_TIME = os.getenv("START_TIME", None)
 current_time: int
@@ -43,9 +42,7 @@ STRATEGY_MAP = {
     "SKIP": SkipStrategy(),
     "ZERO_FILL": ZeroFillStrategy(),
 }
-EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(
-    EMPTY_WINDOW_STRATEGY_NAME.upper(), SkipStrategy()
-)
+EMPTY_WINDOW_STRATEGY = STRATEGY_MAP.get(EMPTY_WINDOW_STRATEGY_NAME.upper(), SkipStrategy())
 
 logger.info(f"""
 ----------------------------------------------
@@ -62,7 +59,7 @@ kafka_producer: Producer | None = None
 
 def on_window_complete(data: dict):
     tags = data.get("tags", {})
-    group = "/".join(str(v) for v in tags.values())
+    group = f"{tags.get('snssai_sst')}/{tags.get('dnn')}/{tags.get('event')}"
     logger.info(
         f"● Window {data['window_start']}-{data['window_end']} "
         f"group={group} samples={data.get('sample_count', 0)} "
@@ -71,9 +68,7 @@ def on_window_complete(data: dict):
 
     if kafka_producer:
         try:
-            kafka_producer.produce(
-                OUTPUT_TOPIC, json.dumps(data, default=str).encode("utf-8")
-            )
+            kafka_producer.produce(OUTPUT_TOPIC, json.dumps(data, default=str).encode("utf-8"))
             kafka_producer.poll(0)
         except Exception as e:
             logger.error(f"Failed to produce to '{OUTPUT_TOPIC}': {e}")
@@ -105,13 +100,11 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
 
 async def consume_messages(window_manager: TimeWindowManager) -> None:
     loop = asyncio.get_running_loop()
-    consumer = Consumer(
-        {
-            "bootstrap.servers": f"{KAFKA_HOST}:{KAFKA_PORT}",
-            "group.id": "data-processor",
-            "auto.offset.reset": "latest",
-        }
-    )
+    consumer = Consumer({
+        "bootstrap.servers": f"{KAFKA_HOST}:{KAFKA_PORT}",
+        "group.id": "data-processor",
+        "auto.offset.reset": "latest",
+    })
     consumer.subscribe([INPUT_TOPIC])
     logger.info(f"Subscribed to '{INPUT_TOPIC}'")
 
