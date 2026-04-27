@@ -4,4 +4,5 @@ pytest==8.3.4
 bandit==1.8.0
 safety==2.3.5
 pytest-asyncio==0.25.2
+fastapi
 policy-client-sdk @ git+https://github.com/ATNoG/pei-nwdaf-policy.git#subdirectory=client_sdk
