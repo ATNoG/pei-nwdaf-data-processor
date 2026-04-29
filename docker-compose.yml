@@ -10,40 +10,29 @@ services:
       - WINDOW_DURATION=60
       - SLIDE_INTERVAL=${SLIDE_INTERVAL_60:-60}
       - ALLOWED_LATENESS=20
-      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-ZERO_FILL}
-      - KNN_K_NEIGHBORS=${KNN_K_NEIGHBORS:-5}
-      - KNN_MAX_HISTORY_HOURS=${KNN_MAX_HISTORY_HOURS:-168}
-      - DATA_STORAGE_API_URL=${DATA_STORAGE_API_URL}
+      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-SKIP}
+      - GROUP_TTL_SECONDS=${GROUP_TTL_SECONDS:-}
       - POLICY_SERVICE_URL=${POLICY_SERVICE_URL:-http://policy-service:8788}
-      - POLICY_COMPONENT_ID=data-processor-60s
-      - POLICY_ENABLED=${POLICY_ENABLED:-true}
-      - POLICY_FAILOPEN=${POLICY_FAILOPEN:-true}
-      - POLICY_ROLENAME=processor
+      - POLICY_ENABLED=${POLICY_ENABLED:-false}
+      - POLICY_COMPONENT_ID=data-processor
+      - POLICY_ROLENAME=${POLICY_ROLENAME:-Processor}
     networks:
       - nwdaf-network
-
-  processor2:
-    container_name: data-processor-300s
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      - KAFKA_HOST=${KAFKA_HOST:-kafka}
-      - KAFKA_PORT=${KAFKA_PORT:-9092}
-      - WINDOW_DURATION=300
-      - SLIDE_INTERVAL=${SLIDE_INTERVAL_300:-300}
-      - ALLOWED_LATENESS=30
-      - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-ZERO_FILL}
-      - KNN_K_NEIGHBORS=${KNN_K_NEIGHBORS:-5}
-      - KNN_MAX_HISTORY_HOURS=${KNN_MAX_HISTORY_HOURS:-168}
-      - DATA_STORAGE_API_URL=${DATA_STORAGE_API_URL}
-      - POLICY_SERVICE_URL=${POLICY_SERVICE_URL:-http://policy-service:8788}
-      - POLICY_COMPONENT_ID=data-processor-300s
-      - POLICY_ENABLED=${POLICY_ENABLED:-true}
-      - POLICY_FAILOPEN=${POLICY_FAILOPEN:-true}
-      - POLICY_ROLENAME=processor
-    networks:
-      - nwdaf-network
+  #processor2:
+  #  container_name: data-processor-300s
+  #  build:
+  #    context: .
+  #    dockerfile: Dockerfile
+  #  environment:
+  #    - KAFKA_HOST=${KAFKA_HOST:-kafka}
+  #    - KAFKA_PORT=${KAFKA_PORT:-9092}
+  #    - WINDOW_DURATION=300
+  #    - SLIDE_INTERVAL=${SLIDE_INTERVAL_300:-300}
+  #    - ALLOWED_LATENESS=30
+  #    - EMPTY_WINDOW_STRATEGY=${EMPTY_WINDOW_STRATEGY:-SKIP}
+  #    - GROUP_TTL_SECONDS=${GROUP_TTL_SECONDS:-}
+  #  networks:
+  #    - nwdaf-network
 
 networks:
   nwdaf-network:

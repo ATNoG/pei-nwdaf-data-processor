@@ -1,34 +1,45 @@
 import logging
-import asyncio
 from collections import defaultdict
 from datetime import datetime
+from statistics import mean, stdev
 from typing import Callable
-from src.profiles.processing_profile import ProcessingProfile
-from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy, KNNStrategy
+
+from cachetools import TTLCache
+
+from src.empty_window_strategy import EmptyWindowStrategy, SkipStrategy
 from src.window_buffer import CellWindowBuffer
-import httpx
 
 logger = logging.getLogger("TimeWindowManager")
 
 
 class TimeWindowManager:
     """
-    Manages event-time aligned windows for measurements grouped by cell.
+    Manages event-time aligned windows for measurements grouped by network slice.
     Window lifecycle is driven by watermark advancement.
+    Records are ingested directly via ingest() — no external HTTP fetch.
 
-    Supports both tumbling and sliding windows via the slide_interval parameter.
-    When slide_interval == window_size, behavior is identical to tumbling windows.
+    Group key: (snssai_sst, snssai_sd, dnn, event)
+    Records missing snssai_sst or dnn are dropped with a warning.
+
+    Sliding vs tumbling: set slide_interval < window_size for sliding windows.
+    When slide_interval == window_size (default), behaviour is identical to tumbling windows.
+
+    During warm-up (watermark_time < window_size), window_start is clamped to 0 so
+    partial windows are still emitted. This is intentional.
+
+    TTL pruning: if group_ttl is set, groups that receive no data for group_ttl
+    wall-clock seconds are pruned after their last window is emitted.
+    Uses cachetools.TTLCache as a heartbeat — each ingest() resets the TTL via
+    __setitem__. Pruning fires after window emission to avoid dropping the final window.
     """
 
     def __init__(
         self,
         window_size: int,
-        storage_struct,
-        on_window_complete: Callable | None = None,                  # callback for completed windows
-        processing_profiles: list[ProcessingProfile] | None = None,
+        on_window_complete: Callable | None = None,
         empty_window_strategy: EmptyWindowStrategy | None = None,
         slide_interval: int | None = None,
-        component_id: str | None = None,
+        group_ttl: int | None = None,
     ):
         self.window_size = window_size
         self.slide_interval = slide_interval if slide_interval is not None else window_size
@@ -40,202 +51,127 @@ class TimeWindowManager:
             )
 
         self.on_window_complete = on_window_complete or print
-        self.processing_profiles = processing_profiles or []
         self.empty_window_strategy = empty_window_strategy or SkipStrategy()
-
-        self.storage_struct = storage_struct
-        self.component_id = component_id  # Component ID for policy enforcement
+        self.group_ttl = group_ttl
 
         self.watermark: int = 0
-        self._last_processed: dict[int, dict] = {}  # Track last processed window per cell
         self._can_change_watermark = True
+        self._last_processed: dict[tuple, dict] = {}
+        self._buffers: dict[tuple, CellWindowBuffer] = {}
+        # Heartbeat: key present ↔ group received data within group_ttl wall-clock seconds.
+        # TTLCache auto-expires entries; __setitem__ in ingest() resets the clock.
+        self._active: TTLCache | None = (
+            TTLCache(maxsize=10_000, ttl=group_ttl) if group_ttl is not None else None
+        )
 
-        # Per-cell window buffers for sliding window data
-        self._buffers: dict[int, CellWindowBuffer] = {}
+    def _group_key(self, record: dict) -> tuple | None:
+        tags = record.get("tags", {})
+        sst = tags.get("snssai_sst")
+        dnn = tags.get("dnn")
+        if sst is None or dnn is None:
+            logger.warning(f"Record missing snssai_sst or dnn, skipping: tags={tags}")
+            return None
+        sd = tags.get("snssai_sd", "")
+        event = record.get("event", "")
+        return (str(sst), str(sd), str(dnn), str(event))
 
-        # History buffer for KNN strategy (shared across all profiles)
-        self._history_buffer: dict[str, list[dict]] = defaultdict(list)
+    def _key_to_tags(self, key: tuple) -> dict:
+        sst, sd, dnn, event = key
+        return {"snssai_sst": sst, "snssai_sd": sd, "dnn": dnn, "event": event}
 
-        # If using KNN strategy, inject the shared history buffer
-        if isinstance(self.empty_window_strategy, KNNStrategy):
-            self.empty_window_strategy.history_buffer = self._history_buffer
-
-    def _get_or_create_buffer(self, cell_index: int) -> CellWindowBuffer:
-        if cell_index not in self._buffers:
-            self._buffers[cell_index] = CellWindowBuffer(time_field="timestamp")
-        return self._buffers[cell_index]
+    def ingest(self, record: dict) -> None:
+        key = self._group_key(record)
+        if key is None:
+            return
+        ts = record.get("timestamp")
+        if isinstance(ts, str):
+            record = dict(record)
+            record["timestamp"] = int(datetime.fromisoformat(ts).timestamp())
+        if key not in self._buffers:
+            self._buffers[key] = CellWindowBuffer(time_field="timestamp")
+        self._buffers[key].append_slice([record])
+        if self._active is not None:
+            self._active[key] = True  # resets wall-clock TTL
 
     def set_initial_watermark(self, watermark: int) -> None:
         if self._can_change_watermark:
             self.watermark = watermark
             self._can_change_watermark = False
 
-    async def advance_watermark(self, watermark_time: int):
-        """
-        Advances watermark monotonically and finalizes all windows
-        whose end <= watermark.
-        """
-
+    async def advance_watermark(self, watermark_time: int) -> None:
+        # advance_watermark has no internal awaits — it is async so callers can
+        # await it consistently, and to preserve the option to add async I/O later.
+        # ingest() and advance_watermark() are both called from the asyncio event
+        # loop (ingest via the result of run_in_executor, not inside it), so there
+        # is no concurrent access to _buffers.
         if watermark_time <= self.watermark:
-            logger.error(f"Cannot move watermark backwards. {self.watermark} >{watermark_time}")
+            logger.error(f"Cannot move watermark backwards: {self.watermark} > {watermark_time}")
             return
         self._can_change_watermark = False
 
-        # The slice to fetch is [old_watermark, new_watermark) — only new data
-        fetch_start = self.watermark
-        fetch_end = watermark_time
-
-        # The full window to process is [watermark_time - window_size, watermark_time)
+        # window_start is clamped to 0 during warm-up (watermark_time < window_size).
         window_start = max(0, watermark_time - self.window_size)
         window_end = watermark_time
 
-        # Fetch cells asynchronously
-        cells = await self._fetch_cells()
-        if not cells:
-            # no cell registered
-            return
+        for key, buf in list(self._buffers.items()):
+            buf.evict_before(window_start)
+            window_data = buf.get_all()
 
-        # Prune buffers for cells that no longer exist
-        active_cell_set = set(cells)
-        stale_cells = [c for c in self._buffers if c not in active_cell_set]
-        for c in stale_cells:
-            del self._buffers[c]
+            if not window_data:
+                last = self._last_processed.get(key)
+                context = {
+                    "tags": self._key_to_tags(key),
+                    "fields": list(last["metrics"].keys()) if last else [],
+                    "window_duration_seconds": self.window_size,
+                }
+                result = self.empty_window_strategy.handle(str(key), window_start, window_end, context)
+                if result is not None:
+                    self.on_window_complete(result)
+            else:
+                result = self._aggregate(key, window_data, window_start, window_end)
+                self._last_processed[key] = result
+                self.on_window_complete(result)
 
-        # Process all cells in parallel
-        tasks = [
-            self._process_cell_window(cell, fetch_start, fetch_end, window_start, window_end)
-            for cell in cells
-        ]
-        await asyncio.gather(*tasks)
+        # Prune after emission so the last window of a dying group is not lost.
+        self._prune_stale_groups(watermark_time)
 
-        # update watermark
         self.watermark = watermark_time
 
-    async def _fetch_slice(self, cell_index: int, start_time: int, end_time: int) -> list[dict] | None:
-        """
-        Fetch raw data for a single cell in the time range [start_time, end_time).
-        Returns list of records.
-        """
-        URL = self.storage_struct.url + self.storage_struct.endpoint.raw
-
-        fetch: bool = True
-        slice_data: list = []
-        batch_number = 1
-
-        async with httpx.AsyncClient() as client:
-            while fetch:
-                # prepare params
-                params = {
-                    "batch_number": batch_number,
-                    "cell_index": cell_index,
-                    "start_time": start_time,
-                    "end_time": end_time
-                }
-                # Prepare headers with component ID for policy enforcement
-                headers = {}
-                if self.component_id:
-                    headers["X-Component-ID"] = self.component_id
-                try:
-                    response = await client.get(f"{URL}", params=params, headers=headers, timeout=30.0)
-                    response.raise_for_status()
-
-                    result = response.json()
-
-                    data = result.get("data", None)
-                    if data is None:
-                        logger.warning(f"[ABORTING] Bad response from storage API: {result}")
-                        return
-
-                    fetch = result.get("has_next", False)
-                    batch_number += 1
-
-                    slice_data.extend(data)
-
-                except httpx.HTTPError as e:
-                    logger.error(f"Failed to fetch data for cell {cell_index} batch {batch_number}: {e}")
-                    return
-
-        return slice_data
-
-    async def _process_cell_window(self, cell_index: int, fetch_start: int, fetch_end: int,
-                                   window_start: int, window_end: int):
-        """
-        For one cell: fetch new data slice, update window buffer, process full window.
-        """
-        # Step 1: Fetch the new slice from the API
-        new_data = await self._fetch_slice(cell_index, fetch_start, fetch_end)
-        if new_data is None:
-            # API error — skip this cell this tick, but preserve existing buffer
+    def _prune_stale_groups(self, watermark_time: int) -> None:
+        if self._active is None:
             return
+        stale = [k for k in list(self._buffers) if k not in self._active]
+        for k in stale:
+            self._buffers.pop(k)
+            self._last_processed.pop(k, None)
+            logger.info(f"Pruned stale group {k} at watermark={watermark_time}")
 
-        # Step 2: Normalize ISO timestamp strings to integer Unix timestamps
-        for record in new_data:
-            ts = record.get("timestamp")
-            if isinstance(ts, str):
-                record["timestamp"] = int(datetime.fromisoformat(ts).timestamp())
+    def _aggregate(self, key: tuple, data: list[dict], window_start: int, window_end: int) -> dict:
+        values: dict[str, list[float]] = defaultdict(list)
+        for record in data:
+            metrics = record.get("metrics", {})
+            for field, val in metrics.items():
+                if isinstance(val, (int, float)):
+                    values[field].append(float(val))
 
-        # Step 3: Append new data to the window buffer
-        buf = self._get_or_create_buffer(cell_index)
-        buf.append_slice(new_data)
+        # std uses sample standard deviation (N-1). Downstream ML consumers
+        # expecting population std should divide by sqrt(count/(count-1)).
+        stats = {}
+        for field, field_vals in values.items():
+            count = len(field_vals)
+            stats[field] = {
+                "mean": mean(field_vals),
+                "min": min(field_vals),
+                "max": max(field_vals),
+                "std": stdev(field_vals) if count > 1 else 0.0,
+                "count": count,
+            }
 
-        # Step 4: Evict data older than window_start
-        buf.evict_before(window_start)
-
-        # Step 5: Get the full buffered window
-        window_data = buf.get_all()
-
-        # Step 6: Process through profiles
-        is_empty: bool = len(window_data) == 0
-        for profile in self.processing_profiles:
-
-            if is_empty:
-                # use profile empty window handling
-                last_processed = self._last_processed.get(cell_index)
-                result = profile.handle_empty_window(
-                    cell_id=str(cell_index),
-                    window_start=window_start,
-                    window_end=window_end,
-                    strategy=self.empty_window_strategy,
-                    last_processed=last_processed)
-                results = [result] if result is not None else []
-            else:
-                results = profile.process(window_data)
-
-            for data in results:
-                data["window_start"] = window_start
-                data["window_duration_seconds"] = self.window_size
-                data["window_end"] = window_end
-
-                # TODO: _last_processed is keyed by cell_index only. When process()
-                # returns multiple groups per cell (e.g. per src_ip), only the last
-                # group's result is stored. May need keying by full group key for
-                # per-group empty window handling in the future.
-                self._last_processed[cell_index] = data.copy()
-
-                # Add to KNN history buffer if not an empty window
-                if not is_empty and isinstance(self.empty_window_strategy, KNNStrategy):
-                    self.empty_window_strategy.add_to_history(str(cell_index), data)
-
-                # Call callback
-                self.on_window_complete(data)
-
-    async def _fetch_cells(self) -> list[int]:
-        """Fetch cells from api"""
-        URL = self.storage_struct.url + self.storage_struct.endpoint.cell
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{URL}", timeout=30.0)
-                response.raise_for_status()
-
-                result = response.json()
-
-                if not isinstance(result, list):
-                    logger.warning(f"[ABORTING] Unexpected response format: {result}")
-                    return []
-
-                return result
-
-        except httpx.HTTPError:
-            logger.error("Failed to fetch cells")
-            return []
+        return {
+            "tags": self._key_to_tags(key),
+            "window_start": window_start,
+            "window_end": window_end,
+            "window_duration_seconds": self.window_size,
+            "sample_count": len(data),
+            "metrics": stats,
+        }
