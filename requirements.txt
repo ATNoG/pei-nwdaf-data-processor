@@ -2,7 +2,7 @@ confluent_kafka==2.12.2
 cachetools==5.5.2
 pytest==8.3.4
 bandit==1.8.0
-safety==2.3.5
+safety==3.7.0 
 pytest-asyncio==0.25.2
 fastapi
 policy-client-sdk @ git+https://github.com/ATNoG/pei-nwdaf-policy.git#subdirectory=client_sdk
