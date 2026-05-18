@@ -39,7 +39,7 @@ jobs:
 
       - name: Run pip-audit
         run: |
-          uvx pip-audit
+          uvx pip-audit -r requirements.txt
 
 #  trigger-jenkins:
 #    needs: test
