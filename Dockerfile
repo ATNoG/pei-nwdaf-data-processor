@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 COPY main.py .
 COPY src/ ./src/
-COPY client_sdk/ ./client_sdk/
 
 # Install dependencies using uv
 RUN uv pip install --system -r requirements.txt
