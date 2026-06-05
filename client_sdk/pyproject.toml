@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policy-client-sdk"
+version = "1.0.0"
+description = "Python SDK for Policy Service with local data transformation support"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "cachetools>=5.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ATNoG/pei-nwdaf-policy"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["policy_client*"]
