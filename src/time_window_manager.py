@@ -147,17 +147,45 @@ class TimeWindowManager:
             logger.info(f"Pruned stale group {k} at watermark={watermark_time}")
 
     def _aggregate(self, key: tuple, data: list[dict], window_start: int, window_end: int) -> dict:
-        values: dict[str, list[float]] = defaultdict(list)
+        import base64
+        try:
+            import tenseal as ts
+            _TENSEAL = True
+        except ImportError:
+            _TENSEAL = False
+
+        first = data[0]
+        encrypted_fields: set[str] = set(first.get("__fhe_encrypted_fields__") or [])
+        ckks_ctx = None
+        if encrypted_fields and _TENSEAL:
+            ctx_b64 = first.get("__fhe_context__")
+            if ctx_b64:
+                try:
+                    ckks_ctx = ts.context_from(base64.b64decode(ctx_b64))
+                except Exception as e:
+                    logger.warning("Failed to load FHE context: %s", e)
+
+        plain_values: dict[str, list[float]] = defaultdict(list)
+        enc_vectors: dict[str, list] = defaultdict(list)
+
         for record in data:
             metrics = record.get("metrics", {})
             for field, val in metrics.items():
-                if isinstance(val, (int, float)):
-                    values[field].append(float(val))
+                if field in encrypted_fields and ckks_ctx is not None:
+                    if isinstance(val, dict) and val.get("__fhe__"):
+                        try:
+                            raw = base64.b64decode(val["ciphertext"])
+                            vec = ts.ckks_vector_from(ckks_ctx, raw)
+                            enc_vectors[field].append(vec)
+                        except Exception as e:
+                            logger.warning("Could not deserialize FHE vector for %r: %s", field, e)
+                elif isinstance(val, (int, float)):
+                    plain_values[field].append(float(val))
 
         # std uses sample standard deviation (N-1). Downstream ML consumers
         # expecting population std should divide by sqrt(count/(count-1)).
-        stats = {}
-        for field, field_vals in values.items():
+        stats: dict = {}
+        for field, field_vals in plain_values.items():
             count = len(field_vals)
             stats[field] = {
                 "mean": mean(field_vals),
@@ -167,7 +195,27 @@ class TimeWindowManager:
                 "count": count,
             }
 
-        return {
+        enc_aggregated: list[str] = []
+        for field, vecs in enc_vectors.items():
+            if not vecs:
+                continue
+            try:
+                enc_sum = vecs[0]
+                for v in vecs[1:]:
+                    enc_sum = enc_sum + v
+                enc_mean = enc_sum * (1.0 / len(vecs))
+                stats[field] = {
+                    "__fhe__": True,
+                    "ciphertext": base64.b64encode(enc_mean.serialize()).decode(),
+                    "scheme": "CKKS",
+                    "samples": len(vecs),
+                    "min": None, "max": None, "std": None,
+                }
+                enc_aggregated.append(field)
+            except Exception as e:
+                logger.warning("Homomorphic mean failed for %r: %s — dropping field", field, e)
+
+        result: dict = {
             "tags": self._key_to_tags(key),
             "window_start": window_start,
             "window_end": window_end,
@@ -175,3 +223,8 @@ class TimeWindowManager:
             "sample_count": len(data),
             "metrics": stats,
         }
+        if enc_aggregated:
+            result["__fhe_context__"] = first.get("__fhe_context__")
+            result["__fhe_encrypted_fields__"] = sorted(enc_aggregated)
+
+        return result

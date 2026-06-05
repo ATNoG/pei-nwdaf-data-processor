@@ -62,6 +62,13 @@ policy_enabled        : {POLICY_ENABLED}
 kafka_producer: Producer | None = None
 _window_queue: asyncio.Queue = asyncio.Queue()
 
+_discovered_fields: set[str] = set()
+_policy_client = None
+
+
+def get_policy_columns() -> list[str]:
+    return sorted(_discovered_fields)
+
 
 def on_window_complete(data: dict):
     tags = data.get("tags", {})
@@ -80,6 +87,22 @@ async def policy_produce_task(policy_client) -> None:
         data = await _window_queue.get()
         try:
             if policy_client is not None:
+                prev_count = len(_discovered_fields)
+                _discovered_fields.update(data.get("tags", {}).keys())
+                _discovered_fields.update(data.get("metrics", {}).keys())
+                if len(_discovered_fields) > prev_count:
+                    try:
+                        await policy_client.register_component(
+                            component_type="processor",
+                            role=os.getenv("POLICY_ROLENAME", "Processor"),
+                            data_columns=get_policy_columns(),
+                            allowed_fields={},
+                            auto_create_attributes=True,
+                        )
+                        logger.info(f"Re-registered with Policy Service ({len(_discovered_fields)} fields discovered)")
+                    except Exception as e:
+                        logger.warning(f"Failed to re-register with Policy Service: {e}")
+
                 result = await policy_client.process_data(
                     source_id=POLICY_COMPONENT_ID,
                     sink_id="kafka",
@@ -91,11 +114,16 @@ async def policy_produce_task(policy_client) -> None:
                     continue
                 tag_keys = data.get("tags", {}).keys()
                 metric_keys = data.get("metrics", {}).keys()
+                still_encrypted = result.data.get("__fhe_encrypted_fields__", [])
                 data = {
                     **data,
                     "tags": {k: result.data[k] for k in tag_keys if k in result.data},
                     "metrics": {k: result.data[k] for k in metric_keys if k in result.data},
+                    **({k: result.data[k] for k in ("__fhe_context__", "__fhe_encrypted_fields__") if k in result.data} if still_encrypted else {}),
                 }
+                if not still_encrypted:
+                    data.pop("__fhe_context__", None)
+                    data.pop("__fhe_encrypted_fields__", None)
 
             if kafka_producer:
                 await loop.run_in_executor(
@@ -135,7 +163,7 @@ async def watermark_task(window_manager: TimeWindowManager) -> None:
         await asyncio.sleep(max(0, SLIDE_INTERVAL - (end - start)))
 
 
-async def consume_messages(window_manager: TimeWindowManager) -> None:
+async def consume_messages(window_manager: TimeWindowManager, policy_client=None) -> None:
     loop = asyncio.get_running_loop()
     consumer = Consumer({
         "bootstrap.servers": f"{KAFKA_HOST}:{KAFKA_PORT}",
@@ -159,6 +187,21 @@ async def consume_messages(window_manager: TimeWindowManager) -> None:
                 payload = json.loads(msg.value().decode("utf-8"))
                 records = payload if isinstance(payload, list) else [payload]
                 for record in records:
+                    if policy_client is not None:
+                        result = await policy_client.receive_data(
+                            source_id="kafka",
+                            data={**record.get("tags", {}), **record.get("metrics", {})},
+                            action="read",
+                        )
+                        if not result.allowed:
+                            logger.warning(f"Record blocked by policy on ingress: {result.reason}")
+                            continue
+                        record = {
+                            **record,
+                            "tags": {k: result.data[k] for k in record.get("tags", {}).keys() if k in result.data},
+                            "metrics": {k: result.data[k] for k in record.get("metrics", {}).keys() if k in result.data},
+                            **{k: result.data[k] for k in ("__fhe_context__", "__fhe_encrypted_fields__") if k in result.data},
+                        }
                     window_manager.ingest(record)
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
@@ -205,7 +248,7 @@ async def main():
         )
 
         tasks = [
-            asyncio.create_task(consume_messages(window_manager)),
+            asyncio.create_task(consume_messages(window_manager, policy_client)),
             asyncio.create_task(watermark_task(window_manager)),
             asyncio.create_task(policy_produce_task(policy_client)),
         ]
